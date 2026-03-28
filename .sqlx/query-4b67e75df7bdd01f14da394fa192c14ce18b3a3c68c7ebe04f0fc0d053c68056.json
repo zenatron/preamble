@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO tracks (file_path, artist, album, title, track, track_total, disc, disc_total, release_year, genre, comment, duration, bitrate, sample_rate, bit_depth, channels)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "4b67e75df7bdd01f14da394fa192c14ce18b3a3c68c7ebe04f0fc0d053c68056"
+}

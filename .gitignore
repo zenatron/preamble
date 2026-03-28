@@ -1,0 +1,15 @@
+/target
+
+# DeeBee
+*.db
+*.db-wal
+*.db-shm
+
+# Env
+.env
+
+#Sqlx cache
+# .sqlx
+
+# code
+.vscode
