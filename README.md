@@ -2,6 +2,8 @@
 
 A music library scanner written in Rust. Walks a directory tree, reads tags from FLAC files, and persists them to a local SQLite database.
 
+No AI was used in the writing of the code. AI was used in the writing of this README.
+
 ## What it does
 
 Point it at a directory and it recursively collects every FLAC file, reads the audio tags and properties using `lofty`, then bulk-inserts everything into a SQLite database in a single transaction. On a library of ~640 files, the full scan completes in under 60ms.
