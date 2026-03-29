@@ -17,12 +17,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::init_db().await?;
     let mut tx = pool.begin().await?;
 
-    let semaphore = Arc::new(Semaphore::new(32)); // Semaphore with 8 concurrent threads
+    // create semaphore with 32 concurrent threads. this seems to be optimal
+    let semaphore = Arc::new(Semaphore::new(32));
 
-    let mut track_paths: Vec<PathBuf> = Vec::new();
-    collect_paths(path, &mut track_paths)?;
+    // loads existing tracks into a HashSet for fast lookup
+    let existing_tracks = db::load_existing_paths(&pool).await?;
 
-    let tasks: Vec<_> = track_paths
+    // fills a Vec of all new track paths, as compared to the HashSet
+    let mut new_track_paths: Vec<PathBuf> = Vec::new();
+    collect_paths(path, &mut new_track_paths, &existing_tracks)?;
+
+    if new_track_paths.is_empty() {
+        println!("No new tracks found.");
+        return Ok(());
+    }
+
+    let tasks: Vec<_> = new_track_paths
         .into_iter()
         .map(|p| {
             let sem = Arc::clone(&semaphore);

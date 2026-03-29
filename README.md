@@ -2,7 +2,7 @@
 
 A music library scanner written in Rust. Walks a directory tree, reads tags from FLAC files, and persists them to a local SQLite database.
 
-No AI was used in the writing of the code. AI was used in the writing of this README.
+No AI was used in the writing of the code. AI was partially used in the writing of this README.
 
 ## What it does
 

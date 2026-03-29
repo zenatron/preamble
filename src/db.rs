@@ -1,10 +1,18 @@
 use crate::track::TrackInfo;
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 
 pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
     let pool = sqlx::SqlitePool::connect("sqlite://library.db?mode=rwc").await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
+}
+
+pub async fn load_existing_paths(pool: &SqlitePool) -> Result<HashSet<String>, sqlx::Error> {
+    let rows = sqlx::query_scalar!("SELECT file_path FROM tracks")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().collect())
 }
 
 pub async fn insert_track(
