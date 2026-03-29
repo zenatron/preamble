@@ -1,13 +1,15 @@
-use crate::track::TrackInfo;
+use crate::track::{TrackInfo, TrackSummary};
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::{collections::HashSet};
 
+// initializes the Sqlite Pool
 pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
     let pool = sqlx::SqlitePool::connect("sqlite://library.db?mode=rwc").await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }
 
+// gets all existing paths in the form of a HashSet
 pub async fn load_existing_paths(pool: &SqlitePool) -> Result<HashSet<String>, sqlx::Error> {
     let rows = sqlx::query_scalar!("SELECT file_path FROM tracks")
         .fetch_all(pool)
@@ -15,6 +17,7 @@ pub async fn load_existing_paths(pool: &SqlitePool) -> Result<HashSet<String>, s
     Ok(rows.into_iter().collect())
 }
 
+// inserts a single track into the Sqlite DB keeping the TX alive
 pub async fn insert_track(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track: &TrackInfo,
@@ -69,13 +72,14 @@ pub async fn insert_track(
         musicbrainz_artist_id,
         musicbrainz_release_artist_id,
         musicbrainz_work_id,
-        status
+        status,
+        file_hash
     ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?
     )"#,
         path, track.title, track.artist, track.album, track.album_artist, track.album_artists, track.composer, track.label, track.genre, track.comment, track.lyrics,
         track.track, track.track_total, track.disc, track.disc_total, track.release_year, track.recording_date, track.original_release_date,
@@ -84,9 +88,42 @@ pub async fn insert_track(
         track.file_format, track.file_size, track.duration, track.bitrate, track.sample_rate, track.bit_depth, track.channels,
         track.acoustid, track.musicbrainz_recording_id, track.musicbrainz_track_id, track.musicbrainz_release_id,
         track.musicbrainz_release_group_id, track.musicbrainz_artist_id, track.musicbrainz_release_artist_id, track.musicbrainz_work_id,
-        track.status
+        track.status, track.file_hash
     )
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+
+pub async fn load_tracks(pool: &SqlitePool) -> Result<Vec<TrackSummary>, sqlx::Error> {
+    let query_result = sqlx::query!(
+        r#"
+        SELECT id, isrc, file_path,
+        title, artist, album,
+        file_format, file_size, duration, bitrate,
+        status, file_hash
+        FROM tracks
+        "#
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| TrackSummary {
+        id: Some(row.id),
+        isrc: row.isrc,
+        file_path: std::path::PathBuf::from(row.file_path),
+        title: row.title,
+        artist: row.artist,
+        album: row.album,
+        file_format: row.file_format,
+        file_size: row.file_size,
+        duration: row.duration.map(|v| v as u32),
+        bitrate: row.bitrate.map(|v| v as u32),
+        status: row.status,
+        file_hash: row.file_hash,
+    })
+    .collect();
+
+    Ok(query_result)
 }

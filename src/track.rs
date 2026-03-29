@@ -22,6 +22,7 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + S
     };
 
     Ok(TrackInfo {
+        id: None,
         file_path: path.to_path_buf(),
 
         // track info
@@ -100,10 +101,19 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + S
 
         // pipeline state
         status: "pending".to_string(),
+
+        // file hash
+        file_hash: None,
     })
 }
 
+pub fn hash_file(path: &PathBuf) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    Some(blake3::hash(&data).to_hex().to_string())
+}
+
 pub struct TrackInfo {
+    pub id: Option<i64>,
     pub file_path: PathBuf,
 
     // core tags
@@ -167,6 +177,9 @@ pub struct TrackInfo {
 
     // pipeline state
     pub status: String,
+
+    // file hash
+    pub file_hash: Option<String>,
 }
 
 impl fmt::Display for TrackInfo {
@@ -183,4 +196,25 @@ impl fmt::Display for TrackInfo {
             self.bitrate
         )
     }
+}
+
+pub struct TrackSummary {
+    pub id: Option<i64>,
+    pub isrc: Option<String>,
+    pub file_path: PathBuf,
+
+    // core tags
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+
+    // tech props
+    pub file_format: Option<String>,
+    pub file_size: Option<i64>,
+    pub duration: Option<u32>,
+    pub bitrate: Option<u32>,
+
+    // pipeline state
+    pub status: String,
+    pub file_hash: Option<String>,
 }

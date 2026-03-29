@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        SELECT id, isrc, file_path,\n        title, artist, album,\n        file_format, file_size, duration, bitrate,\n        status, file_hash\n        FROM tracks\n        ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "isrc",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_path",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "title",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "artist",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "album",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_format",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_size",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "duration",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "bitrate",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "status",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_hash",
+        "ordinal": 11,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "f544f9d48e60f97c9171a867af79040ba29a141a3304eae036d67c3e95f3ba7c"
+}
