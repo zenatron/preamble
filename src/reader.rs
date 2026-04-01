@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 
-pub fn collect_paths(
+pub fn collect_new_paths(
     path: &Path,
     paths: &mut Vec<PathBuf>,
     existing: &HashSet<String>,
@@ -14,7 +14,7 @@ pub fn collect_paths(
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                collect_paths(&path, paths, existing)?;
+                collect_new_paths(&path, paths, existing)?;
             } else {
                 if path.extension().and_then(|e| e.to_str()) == Some("flac") {
                     if !existing.contains(path.to_str().unwrap_or("")) {

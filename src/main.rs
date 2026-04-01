@@ -2,22 +2,20 @@ mod db;
 mod reader;
 mod track;
 mod app;
+mod ui;
 
 use crate::app::App;
 use crate::track::{hash_file, read_tags};
-use ratatui::style::{Style, Stylize};
-use reader::collect_paths;
-use std::fmt::format;
+use reader::collect_new_paths;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::{env, io, time::Duration};
+use std::{env, io};
 
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
-use crossterm::event::{self, Event, KeyCode};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,12 +27,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create semaphore with 32 concurrent threads. this seems to be optimal
     let semaphore = Arc::new(Semaphore::new(32));
 
-    // loads existing tracks into a HashSet for fast lookup
+    // loads existing track paths into a HashSet for fast lookup
     let existing_tracks = db::load_existing_paths(&pool).await?;
+
+    // loads existing track isrcs from all tracks in DB
+    let existing_isrcs = db::load_existing_isrcs(&pool).await?;
+
+    // loads exsiting track hashes from all tracks in DB
+    let existing_hashes = db::load_existing_hashes(&pool).await?;
 
     // fills a Vec of all new track paths, as compared to the HashSet
     let mut new_track_paths: Vec<PathBuf> = Vec::new();
-    collect_paths(path, &mut new_track_paths, &existing_tracks)?;
+    collect_new_paths(path, &mut new_track_paths, &existing_tracks)?;
 
     if !new_track_paths.is_empty() {
         println!("New tracks found!");
@@ -63,10 +67,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Reading took: {:?}", now.elapsed());
         
         let now = std::time::Instant::now();
+
+        let mut seen_isrcs: HashSet<String> = HashSet::new();
+        let mut seen_hashes: HashSet<String> = HashSet::new();
         
         for result in results {
             match result {
-                Ok(Ok(track)) => {
+                Ok(Ok(mut track)) => {
+                    // check duplication, and set status based on that
+                    if track.isrc.as_ref().map(|i| existing_isrcs.contains(i)).unwrap_or(false)
+                    || track.file_hash.as_ref().map(|h| existing_hashes.contains(h)).unwrap_or(false) 
+                    || track.isrc.as_ref().map(|i| seen_isrcs.contains(i)).unwrap_or(false) 
+                    || track.file_hash.as_ref().map(|h| seen_hashes.contains(h)).unwrap_or(false) {
+                        track.status = "duplicate".to_string();
+                    } else {
+                        track.isrc.as_deref().map(|i| seen_isrcs.insert(i.to_string()));
+                        track.file_hash.as_deref().map(|h| seen_hashes.insert(h.to_string()));
+                    }
                     db::insert_track(&mut tx, &track).await?;
                 }
                 Ok(Err(e)) => eprintln!("Failed to read tags: {:?}", e),
@@ -80,9 +97,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::new(pool).await?;
     run_app(app).await?;
 
-    // exit raw mode and remove alternate "new" screen
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
     Ok(())
 }
 
@@ -94,44 +108,20 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut term = Terminal::new(backend)?;
     
-    if !app.tracks.is_empty() { app.list_state.select(Some(0)) };
+    if !app.library_tracks.is_empty() { app.library_state.select(Some(0)) };
+    if !app.pending_tracks.is_empty() { app.pending_state.select(Some(0)) };
 
     loop {
-        term.draw(|f| {
-            let area = f.area();
-            // f.render_widget(Paragraph::new("preamble"), area);
-            
-            let list_items = app.tracks.iter().map(|i| {
-                ListItem::new(format!("{} - {}", i.artist.as_deref().unwrap_or("Unknown"), i.title.as_deref().unwrap_or("Unknown")))
-            });
+        term.draw(|f| ui::draw(f, &mut app))?;
 
-            let list = List::new(list_items)
-                .block(Block::default()
-                .title(format!("Tracks: [{}]/[{}]", app.list_state.selected().unwrap_or(0) + 1, app.tracks.len()))
-                .borders(Borders::ALL))
-                .highlight_style(Style::default().reversed());
+        ui::poll_events(&mut app)?;
 
-            f.render_stateful_widget(list, area, &mut app.list_state);
-        })?;
-
-        if crossterm::event::poll(Duration::from_millis(16))? {
-            match crossterm::event::read()? {
-                Event::Key(key) => {
-                    if key.code == KeyCode::Char('q') {
-                        app.should_quit = true;
-                    }
-                    if key.code == KeyCode::Up {
-                        app.list_state.select_previous();
-                    }
-                    if key.code == KeyCode::Down {
-                        app.list_state.select_next();
-                    }
-                },
-                _ => {},
-            }
-        }
         if app.should_quit { break; }
     }
+
+    // exit raw mode and remove alternate "new" screen
+    crossterm::terminal::disable_raw_mode()?;
+    crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
 
     Ok(())
 }

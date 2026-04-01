@@ -1,15 +1,23 @@
 use crate::db;
 
-use ratatui::widgets::ListState;
+use ratatui::widgets::{ListState, TableState};
 use sqlx::SqlitePool;
 use crate::track::{TrackSummary};
 
 pub struct App {
     pub pool: SqlitePool,
-    pub tracks: Vec<TrackSummary>,
-    // pub selected: usize,
-    // pub pagination_offset: usize,
-    pub list_state: ListState,
+
+    // vec of all tracks (summary)
+    pub library_tracks: Vec<TrackSummary>,
+    pub library_state: TableState,
+
+    // vec of tracks with pending state
+    pub pending_tracks: Vec<TrackSummary>,
+    pub pending_state: TableState,
+
+    // all duplicate tracks
+    pub duplicate_state: TableState,
+    
     pub current_tab: Tabs,
     pub should_quit: bool,
 }
@@ -26,10 +34,14 @@ impl App {
         // The user can manually refetch the tracks on hand
         Ok(Self {
             pool: pool.clone(),
-            tracks: db::load_tracks(&pool).await?,
-            // selected: 0,
-            // pagination_offset: 0,
-            list_state: ListState::default(),
+
+            library_tracks: db::load_tracks(&pool, None).await?,
+            pending_tracks: db::load_tracks(&pool, Some("pending")).await?,
+            
+            library_state: TableState::default(),
+            pending_state: TableState::default(),
+            duplicate_state: TableState::default(),
+            
             current_tab: Tabs::Library,
             should_quit: false,
         })
