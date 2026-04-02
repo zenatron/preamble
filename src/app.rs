@@ -1,6 +1,6 @@
 use crate::db;
 
-use ratatui::widgets::{ListState, TableState};
+use ratatui::widgets::{TableState};
 use sqlx::SqlitePool;
 use crate::track::{TrackSummary};
 

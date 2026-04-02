@@ -3,7 +3,8 @@ use crossterm::event::{Event, KeyCode};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Style, Stylize};
-use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Row, Table};
+use humansize::{format_size, DECIMAL};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -35,8 +36,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     Cell::new(i.album.as_deref().unwrap_or("Unknown")),
 
                     Cell::new(i.file_format.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.file_size.map(|v| v.to_string()).unwrap_or("-".to_string())),
-                    Cell::new(i.duration.map(|v| v.to_string()).unwrap_or("-".to_string())),
+                    Cell::new(i.file_size.map(|v| format_size(v as u64, DECIMAL)).unwrap_or("-".to_string())),
+                    Cell::new(format_track_duration(i.duration).unwrap_or("-".to_string())),
                     Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
 
                     Cell::new(i.status.as_str()),
@@ -63,7 +64,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 .block(
                     Block::default()
                         .title(format!(
-                            "Library: [{}]/[{}]",
+                            "Library: [{}/{}]",
                             app.library_state.selected().unwrap_or(0) + 1,
                             app.library_tracks.len()
                         ))
@@ -75,8 +76,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     Cell::new("Artist"),
                     Cell::new("Album"),
                     Cell::new("Format"),
-                    Cell::new("Size (bytes)"),
-                    Cell::new("Duration (ms)"),
+                    Cell::new("Size"),
+                    Cell::new("Duration"),
                     Cell::new("Bitrate"),
                     Cell::new("Status"),
                     // Cell::new("File Hash"),
@@ -157,4 +158,14 @@ pub fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+
+pub fn format_track_duration(duration_millis: Option<u32>) -> Option<String> {
+    duration_millis.map(|mut d| {
+        d /= 1000;
+        let mins = d / 60;
+        let secs = d % 60;
+        format!("{}:{:02}", mins, secs)
+    })
 }
