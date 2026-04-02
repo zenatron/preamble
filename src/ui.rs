@@ -49,15 +49,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 library_items,
                 [
                     Constraint::Percentage(25), // title
-                    Constraint::Percentage(20), // artist
-                    Constraint::Percentage(15), // album
+                    Constraint::Percentage(15), // artist
+                    Constraint::Percentage(20), // album
 
-                    Constraint::Percentage(5), // file format
+                    Constraint::Percentage(10), // file format
                     Constraint::Percentage(10), // file size
-                    Constraint::Percentage(10), // duration
-                    Constraint::Percentage(10), // bitrate
+                    Constraint::Percentage(5), // duration
+                    Constraint::Percentage(5), // bitrate
 
-                    Constraint::Percentage(5), // status
+                    Constraint::Percentage(10), // status
                     // Constraint::Percentage(10), // file hash
                 ]
             )
