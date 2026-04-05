@@ -14,8 +14,9 @@ pub struct App {
     // vec of tracks with pending state
     pub pending_tracks: Vec<TrackSummary>,
     pub pending_state: TableState,
-
+    
     // all duplicate tracks
+    pub duplicate_tracks: Vec<TrackSummary>,
     pub duplicate_state: TableState,
     
     pub current_tab: Tabs,
@@ -35,8 +36,12 @@ impl App {
         Ok(Self {
             pool: pool.clone(),
 
+            // this later will not happen on initial load and instead
+            // will be populated ad hoc by the user's control
+            // this will allow reloading these states while the app is running
             library_tracks: db::load_tracks(&pool, None).await?,
             pending_tracks: db::load_tracks(&pool, Some("pending")).await?,
+            duplicate_tracks: db::load_tracks(&pool, Some("duplicate")).await?,
             
             library_state: TableState::default(),
             pending_state: TableState::default(),

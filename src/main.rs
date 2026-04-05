@@ -40,6 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut new_track_paths: Vec<PathBuf> = Vec::new();
     collect_new_paths(path, &mut new_track_paths, &existing_tracks)?;
 
+    println!("There are {:?} existing tracks and {:?} new tracks!", existing_tracks.len(), new_track_paths.len());
+
     if !new_track_paths.is_empty() {
         println!("New tracks found!");
         
@@ -79,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     || track.file_hash.as_ref().map(|h| existing_hashes.contains(h)).unwrap_or(false) 
                     || track.isrc.as_ref().map(|i| seen_isrcs.contains(i)).unwrap_or(false) 
                     || track.file_hash.as_ref().map(|h| seen_hashes.contains(h)).unwrap_or(false) {
+                        println!("Duplicate found: {:?}", track.file_path);
                         track.status = "duplicate".to_string();
                     } else {
                         track.isrc.as_deref().map(|i| seen_isrcs.insert(i.to_string()));
@@ -108,8 +111,10 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut term = Terminal::new(backend)?;
     
+    // highlight the first element from each tab
     if !app.library_tracks.is_empty() { app.library_state.select(Some(0)) };
     if !app.pending_tracks.is_empty() { app.pending_state.select(Some(0)) };
+    if !app.duplicate_tracks.is_empty() { app.duplicate_state.select(Some(0)) };
 
     loop {
         term.draw(|f| ui::draw(f, &mut app))?;

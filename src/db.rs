@@ -44,7 +44,7 @@ pub async fn insert_track(
     let path = track.file_path.to_str().unwrap();
     sqlx::query!(
         r#"
-        INSERT OR IGNORE INTO tracks (
+        INSERT INTO tracks (
         file_path,
         title,
         artist,
@@ -154,6 +154,9 @@ pub async fn insert_track(
     Ok(())
 }
 
+
+// db query to return all tracks with a certain status filter
+// potentially expand later to allow more flexibility in queries
 pub async fn load_tracks(
     pool: &SqlitePool,
     status_filter: Option<&str>,

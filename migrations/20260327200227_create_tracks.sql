@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     -- Release metadata
     release_type TEXT,
     compilation INTEGER,
-    isrc TEXT UNIQUE,
+    isrc TEXT,
     barcode TEXT,
     catalog_number TEXT,
     bpm INTEGER,
@@ -70,5 +70,5 @@ CREATE TABLE IF NOT EXISTS tracks (
     enriched_at TIMESTAMP,
 
     -- Blake ID
-    file_hash TEXT UNIQUE
+    file_hash TEXT
 );
