@@ -223,3 +223,19 @@ pub async fn load_tracks(
         Ok(query_result)
     }
 }
+
+// function to count tracks from db with a specified status filter
+pub async fn count_tracks(
+    pool: &SqlitePool,
+    status_filter: Option<&str>,
+) -> Result<i64, sqlx::Error> {
+    if let Some(status) = status_filter {
+        sqlx::query_scalar!(r#"SELECT COUNT(*) FROM tracks WHERE status = ?"#, status)
+            .fetch_one(pool)
+            .await
+    } else {
+        sqlx::query_scalar!(r#"SELECT COUNT(*) FROM tracks"#)
+            .fetch_one(pool)
+            .await
+    }
+}

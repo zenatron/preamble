@@ -7,8 +7,9 @@ mod ui;
 use crate::app::App;
 use crate::track::{hash_file, read_tags};
 use reader::collect_new_paths;
+use sqlx::{SqlitePool};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::{env, io};
 
 use std::sync::Arc;
@@ -20,8 +21,50 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    let path = Path::new(&args[1]);
+    
+    let path: Option<PathBuf> = args.get(1).map(PathBuf::from);
+    
     let pool = db::init_db().await?;
+    
+    if let Some(ref p) = path {
+        scan_library(&pool, p).await?;
+    }
+    
+    let app = App::new(pool, path).await?;
+    run_app(app).await?;
+
+    Ok(())
+}
+
+pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error>> {
+    // enter raw drawing mode and open alternate "new" screen
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut term = Terminal::new(backend)?;
+    
+    // highlight the first element from each tab
+    if !app.library_tracks.is_empty() { app.library_state.select(Some(0)) };
+    if !app.pending_tracks.is_empty() { app.pending_state.select(Some(0)) };
+    if !app.duplicate_tracks.is_empty() { app.duplicate_state.select(Some(0)) };
+
+    loop {
+        term.draw(|f| ui::draw(f, &mut app))?;
+
+        ui::poll_events(&mut app)?;
+
+        if app.should_quit { break; }
+    }
+
+    // exit raw mode and remove alternate "new" screen
+    crossterm::terminal::disable_raw_mode()?;
+    crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
+
+    Ok(())
+}
+
+pub async fn scan_library(pool: &SqlitePool, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut tx = pool.clone().begin().await?;
 
     // create semaphore with 32 concurrent threads. this seems to be optimal
@@ -96,37 +139,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tx.commit().await?;
         println!("Inserting took: {:?}", now.elapsed());
     }
-    
-    let app = App::new(pool).await?;
-    run_app(app).await?;
-
-    Ok(())
-}
-
-pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error>> {
-    // enter raw drawing mode and open alternate "new" screen
-    crossterm::terminal::enable_raw_mode()?;
-    crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
-
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut term = Terminal::new(backend)?;
-    
-    // highlight the first element from each tab
-    if !app.library_tracks.is_empty() { app.library_state.select(Some(0)) };
-    if !app.pending_tracks.is_empty() { app.pending_state.select(Some(0)) };
-    if !app.duplicate_tracks.is_empty() { app.duplicate_state.select(Some(0)) };
-
-    loop {
-        term.draw(|f| ui::draw(f, &mut app))?;
-
-        ui::poll_events(&mut app)?;
-
-        if app.should_quit { break; }
-    }
-
-    // exit raw mode and remove alternate "new" screen
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
-
     Ok(())
 }
