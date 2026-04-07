@@ -1,13 +1,15 @@
 use std::rc::Rc;
 
 use crate::app::{self, App};
+use crate::db;
+use crate::reader::scan_library;
 use crossterm::event::{Event, KeyCode};
 use humansize::{DECIMAL, format_size};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -19,7 +21,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app::Screens::Main => {
             draw_main_screen(f, app, area);
         }
-        app::Screens::Scanning => todo!(),
+        app::Screens::Scanning => {
+            draw_scanning_screen(f, app, area);
+        }
     }
 }
 
@@ -29,16 +33,18 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(6), // title
         Constraint::Length(1), // version
         Constraint::Length(4), // stats
+        Constraint::Length(2), // path
         Constraint::Length(4), // tooltips
         Constraint::Fill(1),   // bottom padding
     ])
     .split(area);
 
     let title = ratatui::text::Text::from(vec![
+        Line::from("                                _     _      "),
         Line::from(" _ __  _ __ ___  __ _ _ __ ___ | |__ | | ___ "),
         Line::from("| '_ \\| '__/ _ \\/ _` | '_ ` _ \\| '_ \\| |/ _ \\"),
         Line::from("| |_) | | |  __/ (_| | | | | | | |_) | |  __/"),
-        Line::from("| .__/|_|  \\___|\\___|__| |_| |_|_.__/|_|\\___|"),
+        Line::from("| .__/|_| \\___/\\___|_|_| |_| |_|_.__/|_|\\___|"),
         Line::from("|_|                                          "),
     ]);
 
@@ -61,11 +67,16 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
         sections[3],
     );
     f.render_widget(
-        Paragraph::new(
-            format!("[s] : Scan Library\n[enter] : View Library\n[q] : Quit")
-        )
+        Paragraph::new(format!("Path to Scan: {:?}", app.pending_scan_path))
             .alignment(ratatui::layout::Alignment::Center),
         sections[4],
+    );
+    f.render_widget(
+        Paragraph::new(format!(
+            "[s] : Scan Library (updates any newly added tracks)\n[r] : Fresh Scan (WARNING: completely rebuilds database)\n[enter] : View Library\n[q] : Quit"
+        )).style(Style::new().add_modifier(Modifier::BOLD))
+        .alignment(ratatui::layout::Alignment::Center),
+        sections[5],
     );
 }
 
@@ -76,7 +87,32 @@ fn draw_main_screen(f: &mut Frame, app: &mut App, area: Rect) {
     draw_table_content(f, app, &sections);
 }
 
-pub fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+fn draw_scanning_screen(f: &mut Frame, app: &mut App, area: Rect) {
+    let outer = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(5), // gauge height
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let inner = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Percentage(50), // gauge width
+        Constraint::Fill(1),
+    ])
+    .split(outer[1]);
+
+    let (n, total) = app.scan_progress.unwrap_or((0, 1));
+    let ratio = n as f64 / total as f64;
+    let gauge = Gauge::default()
+        .block(Block::default().title("Scanning...").borders(Borders::ALL))
+        .ratio(ratio)
+        .label(format!("[{}/{}]", n, total));
+
+    f.render_widget(gauge, inner[1]);
+}
+
+pub async fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if crossterm::event::poll(std::time::Duration::from_millis(16))? {
         match crossterm::event::read()? {
             Event::Key(key) => {
@@ -87,7 +123,26 @@ pub fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 match app.current_screen {
                     app::Screens::Start => {
                         if key.code == KeyCode::Char('s') {
-                            // todo!(); // TODO: scan library
+                            if let Some(ref path) = app.pending_scan_path {
+                                let (tx, rx) = tokio::sync::mpsc::channel(100);
+                                app.scan_receiver = Some(rx);
+                                tokio::spawn(scan_library(app.pool.clone(), path.clone(), tx));
+                                app.current_screen = app::Screens::Scanning;
+                            } else {
+                                app.status_message = Some("Path not provided.".to_string());
+                            }
+                        }
+
+                        if key.code == KeyCode::Char('r') {
+                            if let Some(ref path) = app.pending_scan_path {
+                                db::truncate_tracks(&app.pool).await?;
+                                let (tx, rx) = tokio::sync::mpsc::channel(100);
+                                app.scan_receiver = Some(rx);
+                                tokio::spawn(scan_library(app.pool.clone(), path.clone(), tx));
+                                app.current_screen = app::Screens::Scanning;
+                            } else {
+                                app.status_message = Some("Path not provided.".to_string());
+                            }
                         }
                         if key.code == KeyCode::Enter {
                             app.current_screen = app::Screens::Main;

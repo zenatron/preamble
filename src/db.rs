@@ -239,3 +239,8 @@ pub async fn count_tracks(
             .await
     }
 }
+
+pub async fn truncate_tracks(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query!(r#"DELETE FROM tracks"#).execute(pool).await?;
+    Ok(())
+}

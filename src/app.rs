@@ -1,5 +1,6 @@
 use crate::db;
 
+use crate::reader::ScanEvent;
 use crate::track::TrackSummary;
 use ratatui::widgets::TableState;
 use sqlx::SqlitePool;
@@ -8,6 +9,12 @@ pub struct App {
     pub pool: SqlitePool,
 
     pub pending_scan_path: Option<std::path::PathBuf>,
+    pub status_message: Option<String>,
+
+
+    pub scan_progress: Option<(usize, usize)>, // (processed, total)
+    pub scan_receiver: Option<tokio::sync::mpsc::Receiver<ScanEvent>>,
+
 
     pub library_stats: LibraryStats,
 
@@ -39,6 +46,10 @@ impl App {
             pool: pool.clone(),
 
             pending_scan_path,
+            status_message: None,
+
+            scan_progress: None,
+            scan_receiver: None,
 
             library_stats: LibraryStats {
                 total_tracks: db::count_tracks(&pool, None).await? as u32,
@@ -61,6 +72,17 @@ impl App {
             current_tab: Tabs::Library,
             should_quit: false,
         })
+    }
+
+    pub async fn reload(app: &mut App) -> Result<(), sqlx::Error> {
+        app.library_stats.total_tracks = db::count_tracks(&app.pool, None).await? as u32;
+        app.library_stats.total_pending = db::count_tracks(&app.pool, Some("pending")).await? as u32;
+        app.library_stats.total_duplicates = db::count_tracks(&app.pool, Some("duplicate")).await? as u32;
+
+        app.library_tracks = db::load_tracks(&app.pool, None).await?;
+        app.pending_tracks = db::load_tracks(&app.pool, Some("pending")).await?;
+        app.duplicate_tracks = db::load_tracks(&app.pool, Some("duplicate")).await?;
+        Ok(())
     }
 }
 
