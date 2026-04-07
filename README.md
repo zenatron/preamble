@@ -2,7 +2,7 @@
 
 A music library scanner and metadata tool written in Rust. Walks a directory tree, reads tags from FLAC files, persists them to a local SQLite database, and presents everything in a terminal UI.
 
-No AI was used in the writing of the code. AI was partially used in the writing of this README.
+> All code in this repository was written by hand. AI was used as a learning aid and reference during development, not to generate code. This README was partially drafted with AI assistance.
 
 ## What it does
 
@@ -103,3 +103,7 @@ Full tag metadata including title, artist, album, album artist, composer, label,
 - [ ] Manual tag editing
 - [ ] Watch mode — monitor directory for new files
 - [ ] Structured logging with `tracing`
+
+## Contributing
+
+This is a personal learning project — contributions aren't expected, but feedback, bug reports, and suggestions are welcome via issues. If you do open a PR, please keep it focused and avoid AI-generated code.
