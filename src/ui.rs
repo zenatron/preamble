@@ -1,14 +1,15 @@
 use std::rc::Rc;
 
 use crate::app::{self, App};
-use crate::db;
+use crate::db::{self, load_track_full};
 use crate::reader::scan_library;
-use crossterm::event::{Event, KeyCode};
+use crate::track::TrackInfo;
+use crossterm::event::{Event, KeyCode, KeyEvent};
 use humansize::{DECIMAL, format_size};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -81,6 +82,15 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_main_screen(f: &mut Frame, app: &mut App, area: Rect) {
+    let area = if matches!(app.current_screen, app::Screens::Main) && app.properties_panel_open {
+        // create split here for properties panel
+        let sections = Layout::horizontal([Constraint::Fill(3), Constraint::Fill(1)]).split(area);
+        draw_properties_panel(f, app, sections[1]);
+        sections[0]
+    } else {
+        area
+    };
+
     let sections = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
 
     draw_tab_bar(f, app, &sections);
@@ -122,62 +132,11 @@ pub async fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error 
 
                 match app.current_screen {
                     app::Screens::Start => {
-                        if key.code == KeyCode::Char('s') {
-                            if let Some(ref path) = app.pending_scan_path {
-                                let (tx, rx) = tokio::sync::mpsc::channel(100);
-                                app.scan_receiver = Some(rx);
-                                tokio::spawn(scan_library(app.pool.clone(), path.clone(), tx));
-                                app.current_screen = app::Screens::Scanning;
-                            } else {
-                                app.status_message = Some("Path not provided.".to_string());
-                            }
-                        }
-
-                        if key.code == KeyCode::Char('r') {
-                            if let Some(ref path) = app.pending_scan_path {
-                                db::truncate_tracks(&app.pool).await?;
-                                let (tx, rx) = tokio::sync::mpsc::channel(100);
-                                app.scan_receiver = Some(rx);
-                                tokio::spawn(scan_library(app.pool.clone(), path.clone(), tx));
-                                app.current_screen = app::Screens::Scanning;
-                            } else {
-                                app.status_message = Some("Path not provided.".to_string());
-                            }
-                        }
-                        if key.code == KeyCode::Enter {
-                            app.current_screen = app::Screens::Main;
-                        }
+                        handle_start_navigation(app, key).await;
                     }
 
                     app::Screens::Main => {
-                        if key.code == KeyCode::Up {
-                            // highlight previous track
-                            match app.current_tab {
-                                app::Tabs::Library => app.library_state.select_previous(),
-                                app::Tabs::Enrichment => app.pending_state.select_previous(),
-                                app::Tabs::Duplicates => app.duplicate_state.select_previous(),
-                            }
-                        }
-                        if key.code == KeyCode::Down {
-                            // highlight next track
-                            match app.current_tab {
-                                app::Tabs::Library => app.library_state.select_next(),
-                                app::Tabs::Enrichment => app.pending_state.select_next(),
-                                app::Tabs::Duplicates => app.duplicate_state.select_next(),
-                            }
-                        }
-                        if key.code == KeyCode::Tab {
-                            // cycle app tabs
-                            match app.current_tab {
-                                app::Tabs::Library => app.current_tab = app::Tabs::Enrichment,
-                                app::Tabs::Enrichment => app.current_tab = app::Tabs::Duplicates,
-                                app::Tabs::Duplicates => app.current_tab = app::Tabs::Library,
-                            }
-                        }
-
-                        if key.code == KeyCode::Esc {
-                            app.current_screen = app::Screens::Start;
-                        }
+                        handle_main_navigation(app, key).await;
                     }
                     app::Screens::Scanning => {}
                 };
@@ -186,6 +145,120 @@ pub async fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error 
         }
     }
     Ok(())
+}
+
+async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Char('s') {
+        if let Some(ref path) = app.pending_scan_path {
+            let (tx, rx) = tokio::sync::mpsc::channel(100);
+            app.scan_receiver = Some(rx);
+            tokio::spawn(scan_library(app.pool.clone(), path.clone(), tx));
+            app.current_screen = app::Screens::Scanning;
+        } else {
+            app.status_message = Some("Path not provided.".to_string());
+        }
+    }
+
+    if key.code == KeyCode::Char('r') {
+        if let Some(ref path) = app.pending_scan_path {
+            db::truncate_tracks(&app.pool).await.ok();
+            let (tx, rx) = tokio::sync::mpsc::channel(100);
+            app.scan_receiver = Some(rx);
+            tokio::spawn(scan_library(app.pool.clone(), path.clone(), tx));
+            app.current_screen = app::Screens::Scanning;
+        } else {
+            app.status_message = Some("Path not provided.".to_string());
+        }
+    }
+    if key.code == KeyCode::Enter {
+        app.current_screen = app::Screens::Main;
+    }
+}
+
+async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Char('p') {
+        app.properties_panel_open = true;
+        load_selected_track(app).await;
+    }
+    if key.code == KeyCode::Up {
+        // highlight previous track
+        match app.current_tab {
+            app::Tabs::Library => {
+                app.library_state.select_previous();
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+            app::Tabs::Enrichment => {
+                app.pending_state.select_previous();
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+            app::Tabs::Duplicates => {
+                app.duplicate_state.select_previous();
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+        }
+    }
+    if key.code == KeyCode::Down {
+        // highlight next track
+        match app.current_tab {
+            app::Tabs::Library => {
+                app.library_state.select_next();
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+            app::Tabs::Enrichment => {
+                app.pending_state.select_next();
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+            app::Tabs::Duplicates => {
+                app.duplicate_state.select_next();
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+        }
+    }
+    if key.code == KeyCode::Tab {
+        // cycle app tabs
+        match app.current_tab {
+            app::Tabs::Library => {
+                app.current_tab = app::Tabs::Enrichment;
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+            app::Tabs::Enrichment => {
+                app.current_tab = app::Tabs::Duplicates;
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+            app::Tabs::Duplicates => {
+                app.current_tab = app::Tabs::Library;
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+        }
+    }
+
+    if key.code == KeyCode::Esc {
+        if app.properties_panel_open {
+            app.properties_panel_open = false;
+        } else {
+            if !matches!(app.current_screen, app::Screens::Start) {
+                app.current_screen = app::Screens::Start;
+            }
+        }
+    }
 }
 
 pub fn format_track_duration(duration_millis: Option<u32>) -> Option<String> {
@@ -209,7 +282,33 @@ pub fn format_thou(n: u32) -> String {
     result.chars().rev().collect()
 }
 
+async fn load_selected_track(app: &mut App) {
+    let mut selected_track_db_id = 0;
+    match app.current_tab {
+        app::Tabs::Library => {
+            if let Some(idx) = app.library_state.selected() {
+                selected_track_db_id = app.library_tracks[idx].id.unwrap_or(0);
+            }
+        }
+        app::Tabs::Enrichment => {
+            if let Some(idx) = app.pending_state.selected() {
+                selected_track_db_id = app.pending_tracks[idx].id.unwrap_or(0);
+            }
+        }
+        app::Tabs::Duplicates => {
+            if let Some(idx) = app.duplicate_state.selected() {
+                selected_track_db_id = app.duplicate_tracks[idx].id.unwrap_or(0);
+            }
+        }
+    }
+    app.properties_of_track = load_track_full(&app.pool, selected_track_db_id)
+        .await
+        .ok()
+        .flatten();
+}
+
 fn draw_tab_bar(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
+    // TODO: JUST PASS IN AREA? NOT THE WHOLE SECTIONS ARR
     let tab_bar = ratatui::widgets::Tabs::new(vec!["Library", "Enrichment", "Duplicates"])
         .select(match app.current_tab {
             app::Tabs::Library => 0,
@@ -424,5 +523,245 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
 
             f.render_stateful_widget(list, sections[1], &mut app.duplicate_state);
         }
+    }
+}
+
+fn draw_properties_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    if let Some(track) = &app.properties_of_track {
+        let block = Block::default()
+            .title("Track Properties")
+            .borders(Borders::ALL);
+
+        let inner = block.inner(area);
+
+        let opt = |v: &Option<String>| v.as_deref().unwrap_or("—").to_string();
+
+        let lines = vec![
+
+            // core tags
+            Line::from(vec![
+                Span::styled("Title: ", Style::default().bold()),
+                Span::raw(track.title.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Artist: ", Style::default().bold()),
+                Span::raw(track.artist.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Album: ", Style::default().bold()),
+                Span::raw(track.album.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Album Artist: ", Style::default().bold()),
+                Span::raw(track.album_artist.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Album Artists: ", Style::default().bold()),
+                Span::raw(track.album_artists.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Composer: ", Style::default().bold()),
+                Span::raw(track.composer.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Label: ", Style::default().bold()),
+                Span::raw(track.label.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Genre: ", Style::default().bold()),
+                Span::raw(track.genre.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Comment: ", Style::default().bold()),
+                Span::raw(track.comment.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Lyrics: ", Style::default().bold()),
+                Span::raw(track.lyrics.as_deref().unwrap_or("")),
+            ]),
+
+            // numbering
+            Line::from(vec![
+                Span::styled("Track: ", Style::default().bold()),
+                Span::raw(track.track.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Track Total: ", Style::default().bold()),
+                Span::raw(track.track_total.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Disc: ", Style::default().bold()),
+                Span::raw(track.disc.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Disc Total: ", Style::default().bold()),
+                Span::raw(track.disc_total.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+
+            // dates
+            Line::from(vec![
+                Span::styled("Release Year: ", Style::default().bold()),
+                Span::raw(
+                    track
+                        .release_year
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Recording Date: ", Style::default().bold()),
+                Span::raw(track.recording_date.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Original Release Date: ", Style::default().bold()),
+                Span::raw(track.original_release_date.as_deref().unwrap_or("")),
+            ]),
+
+            // release metadata
+            Line::from(vec![
+                Span::styled("Release Type: ", Style::default().bold()),
+                Span::raw(track.release_type.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Compilation: ", Style::default().bold()),
+                Span::raw(
+                    track
+                        .compilation
+                        .map(|v| if v { "Yes" } else { "No" })
+                        .unwrap_or(""),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("ISRC: ", Style::default().bold()),
+                Span::raw(track.isrc.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Barcode: ", Style::default().bold()),
+                Span::raw(track.barcode.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Catalog Number: ", Style::default().bold()),
+                Span::raw(track.catalog_number.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("BPM: ", Style::default().bold()),
+                Span::raw(track.bpm.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Language: ", Style::default().bold()),
+                Span::raw(track.language.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Script: ", Style::default().bold()),
+                Span::raw(track.script.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("Mood: ", Style::default().bold()),
+                Span::raw(track.mood.as_deref().unwrap_or("")),
+            ]),
+
+            // replaygain
+            Line::from(vec![
+                Span::styled("RG Track Gain: ", Style::default().bold()),
+                Span::raw(track.replay_gain_track_gain.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("RG Track Peak: ", Style::default().bold()),
+                Span::raw(track.replay_gain_track_peak.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("RG Album Gain: ", Style::default().bold()),
+                Span::raw(track.replay_gain_album_gain.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("RG Album Peak: ", Style::default().bold()),
+                Span::raw(track.replay_gain_album_peak.as_deref().unwrap_or("")),
+            ]),
+
+            // tech properties
+            Line::from(vec![
+                Span::styled("File Format: ", Style::default().bold()),
+                Span::raw(track.file_format.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("File Size: ", Style::default().bold()),
+                Span::raw(track.file_size.map(|v| format_size(v as u64, DECIMAL)).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Duration: ", Style::default().bold()),
+                Span::raw(format_track_duration(track.duration).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Bitrate: ", Style::default().bold()),
+                Span::raw(track.bitrate.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Sample Rate: ", Style::default().bold()),
+                Span::raw(track.sample_rate.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Bit Depth: ", Style::default().bold()),
+                Span::raw(track.bit_depth.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+            Line::from(vec![
+                Span::styled("Channels: ", Style::default().bold()),
+                Span::raw(track.channels.map(|v| v.to_string()).unwrap_or_default()),
+            ]),
+
+            // external IDs
+            Line::from(vec![
+                Span::styled("AcoustID: ", Style::default().bold()),
+                Span::raw(track.acoustid.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("MB Recording ID: ", Style::default().bold()),
+                Span::raw(track.musicbrainz_recording_id.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("MB Track ID: ", Style::default().bold()),
+                Span::raw(track.musicbrainz_track_id.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("MB Release ID: ", Style::default().bold()),
+                Span::raw(track.musicbrainz_release_id.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("MB Release Group ID: ", Style::default().bold()),
+                Span::raw(track.musicbrainz_release_group_id.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("MB Artist ID: ", Style::default().bold()),
+                Span::raw(track.musicbrainz_artist_id.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("MB Release Artist ID: ", Style::default().bold()),
+                Span::raw(track.musicbrainz_release_artist_id.as_deref().unwrap_or("")),
+            ]),
+            Line::from(vec![
+                Span::styled("MB Work ID: ", Style::default().bold()),
+                Span::raw(track.musicbrainz_work_id.as_deref().unwrap_or("")),
+            ]),
+
+            // pipeline state
+            Line::from(vec![
+                Span::styled("Status: ", Style::default().bold()),
+                Span::raw(track.status.as_str()),
+            ]),
+
+            // file hash
+            Line::from(vec![
+                Span::styled("File Hash: ", Style::default().bold()),
+                Span::raw(track.file_hash.as_deref().unwrap_or("")),
+            ]),
+
+            // file path (duh)
+            Line::from(vec![
+                Span::styled("File Path: ", Style::default().bold()),
+                Span::raw(track.file_path.to_string_lossy().into_owned()),
+            ]),
+        ];
+
+        f.render_widget(block, area);
+        f.render_widget(Paragraph::new(lines), inner);
     }
 }

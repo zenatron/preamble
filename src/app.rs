@@ -1,7 +1,7 @@
 use crate::db;
 
 use crate::reader::ScanEvent;
-use crate::track::TrackSummary;
+use crate::track::{TrackInfo, TrackSummary};
 use ratatui::widgets::TableState;
 use sqlx::SqlitePool;
 
@@ -29,6 +29,10 @@ pub struct App {
     // all duplicate tracks
     pub duplicate_tracks: Vec<TrackSummary>,
     pub duplicate_state: TableState,
+
+    // properties panel
+    pub properties_panel_open: bool,
+    pub properties_of_track: Option<TrackInfo>, // the whole track
 
     pub current_screen: Screens,
     pub current_tab: Tabs,
@@ -60,13 +64,16 @@ impl App {
             // this later will not happen on initial load and instead
             // will be populated ad hoc by the user's control
             // this will allow reloading these states while the app is running
-            library_tracks: db::load_tracks(&pool, None).await?,
-            pending_tracks: db::load_tracks(&pool, Some("pending")).await?,
-            duplicate_tracks: db::load_tracks(&pool, Some("duplicate")).await?,
+            library_tracks: db::load_tracks(&pool, None, None).await?,
+            pending_tracks: db::load_tracks(&pool, Some("pending"), None).await?,
+            duplicate_tracks: db::load_tracks(&pool, Some("duplicate"), None).await?,
 
             library_state: TableState::default(),
             pending_state: TableState::default(),
             duplicate_state: TableState::default(),
+
+            properties_panel_open: false,
+            properties_of_track: None,
 
             current_screen: Screens::Start, // init with starting screen
             current_tab: Tabs::Library,
@@ -79,9 +86,12 @@ impl App {
         app.library_stats.total_pending = db::count_tracks(&app.pool, Some("pending")).await? as u32;
         app.library_stats.total_duplicates = db::count_tracks(&app.pool, Some("duplicate")).await? as u32;
 
-        app.library_tracks = db::load_tracks(&app.pool, None).await?;
-        app.pending_tracks = db::load_tracks(&app.pool, Some("pending")).await?;
-        app.duplicate_tracks = db::load_tracks(&app.pool, Some("duplicate")).await?;
+        app.library_tracks = db::load_tracks(&app.pool, None, None).await?;
+        app.pending_tracks = db::load_tracks(&app.pool, Some("pending"), None).await?;
+        app.duplicate_tracks = db::load_tracks(&app.pool, Some("duplicate"), None).await?;
+
+        app.properties_panel_open = false;
+        app.properties_of_track = None;
         Ok(())
     }
 }
