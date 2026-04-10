@@ -2,8 +2,9 @@ use std::rc::Rc;
 
 use crate::app::{self, App};
 use crate::db::{self, load_track_full};
+use crate::formatters::{format_thou, format_track_duration};
 use crate::reader::scan_library;
-use crate::track::TrackInfo;
+
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use humansize::{DECIMAL, format_size};
 use ratatui::Frame;
@@ -47,14 +48,17 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from("| |_) | | |  __/ (_| | | | | | | |_) | |  __/"),
         Line::from("| .__/|_| \\___/\\___|_|_| |_| |_|_.__/|_|\\___|"),
         Line::from("|_|                                          "),
-    ]);
+    ])
+    .light_red();
 
     f.render_widget(
         title.alignment(ratatui::layout::Alignment::Center),
         sections[1],
     );
     f.render_widget(
-        Paragraph::new("v0.1.0").alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new("v0.1.0")
+            .alignment(ratatui::layout::Alignment::Center)
+            .blue(),
         sections[2],
     );
     f.render_widget(
@@ -64,12 +68,14 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
             format_thou(app.library_stats.total_pending),
             format_thou(app.library_stats.total_duplicates)
         ))
-        .alignment(ratatui::layout::Alignment::Center),
+        .alignment(ratatui::layout::Alignment::Center)
+        .light_green(),
         sections[3],
     );
     f.render_widget(
         Paragraph::new(format!("Path to Scan: {:?}", app.pending_scan_path))
-            .alignment(ratatui::layout::Alignment::Center),
+            .alignment(ratatui::layout::Alignment::Center)
+            .light_cyan(),
         sections[4],
     );
     f.render_widget(
@@ -91,10 +97,16 @@ fn draw_main_screen(f: &mut Frame, app: &mut App, area: Rect) {
         area
     };
 
-    let sections = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
+    let sections = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
 
-    draw_tab_bar(f, app, &sections);
-    draw_table_content(f, app, &sections);
+    draw_tab_bar(f, app, sections[0]);
+    draw_shortcuts_row(f, sections[1]);
+    draw_table_content(f, app, sections[2]);
 }
 
 fn draw_scanning_screen(f: &mut Frame, app: &mut App, area: Rect) {
@@ -250,6 +262,81 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         }
     }
 
+    // handle toggle track row selection
+    if key.code == KeyCode::Char(' ') {
+        match app.current_tab {
+            app::Tabs::Library => {
+                if let Some(idx) = app.library_state.selected() {
+                    app.library_tracks[idx].is_selected = !app.library_tracks[idx].is_selected;
+                }
+            }
+            app::Tabs::Enrichment => {
+                if let Some(idx) = app.pending_state.selected() {
+                    app.pending_tracks[idx].is_selected = !app.pending_tracks[idx].is_selected;
+                }
+            }
+            app::Tabs::Duplicates => {
+                if let Some(idx) = app.duplicate_state.selected() {
+                    app.duplicate_tracks[idx].is_selected = !app.duplicate_tracks[idx].is_selected;
+                }
+            }
+        }
+    }
+
+    // handle SELECT ALL
+    if key.code == KeyCode::Char('i') {
+        match app.current_tab {
+            app::Tabs::Library => app
+                .library_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = true),
+            app::Tabs::Enrichment => app
+                .pending_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = true),
+            app::Tabs::Duplicates => app
+                .duplicate_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = true),
+        }
+    }
+
+    // handle DESELECT ALL
+    if key.code == KeyCode::Char('o') {
+        match app.current_tab {
+            app::Tabs::Library => app
+                .library_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = false),
+            app::Tabs::Enrichment => app
+                .pending_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = false),
+            app::Tabs::Duplicates => app
+                .duplicate_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = false),
+        }
+    }
+
+    // handle INVERT SELECTION
+    if key.code == KeyCode::Char('u') {
+        match app.current_tab {
+            app::Tabs::Library => app
+                .library_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = !f.is_selected),
+            app::Tabs::Enrichment => app
+                .pending_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = !f.is_selected),
+            app::Tabs::Duplicates => app
+                .duplicate_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = !f.is_selected),
+        }
+    }
+
     if key.code == KeyCode::Esc {
         if app.properties_panel_open {
             app.properties_panel_open = false;
@@ -259,27 +346,6 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
             }
         }
     }
-}
-
-pub fn format_track_duration(duration_millis: Option<u32>) -> Option<String> {
-    duration_millis.map(|mut d| {
-        d /= 1000;
-        let mins = d / 60;
-        let secs = d % 60;
-        format!("{}:{:02}", mins, secs)
-    })
-}
-
-pub fn format_thou(n: u32) -> String {
-    let s = n.to_string();
-    let mut result = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
-        }
-        result.push(c);
-    }
-    result.chars().rev().collect()
 }
 
 async fn load_selected_track(app: &mut App) {
@@ -307,29 +373,38 @@ async fn load_selected_track(app: &mut App) {
         .flatten();
 }
 
-fn draw_tab_bar(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
-    // TODO: JUST PASS IN AREA? NOT THE WHOLE SECTIONS ARR
+fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
     let tab_bar = ratatui::widgets::Tabs::new(vec!["Library", "Enrichment", "Duplicates"])
         .select(match app.current_tab {
             app::Tabs::Library => 0,
             app::Tabs::Enrichment => 1,
             app::Tabs::Duplicates => 2,
         })
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().borders(Borders::ALL).light_green());
 
-    f.render_widget(tab_bar, sections[0]);
+    f.render_widget(tab_bar, area);
 }
 
-fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
+fn draw_shortcuts_row(f: &mut Frame, area: Rect) {
+    f.render_widget(
+        Paragraph::new("Shortcuts: | cycle [TAB]s | [SPACE]lect | [U]nvert selection | s[I]lect all | select n[O]ne | [D]elete | [ESC]ape | [P]roperties |"
+        )
+        .blue(),
+        area
+    );
+}
+
+fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
     match app.current_tab {
         app::Tabs::Library => {
             if app.library_tracks.len() == 0 {
-                f.render_widget(Paragraph::new("No Library Tracks Found"), sections[1]);
+                f.render_widget(Paragraph::new("No Library Tracks Found"), area);
                 return;
             }
 
             let library_items = app.library_tracks.iter().map(|i| {
                 Row::new(vec![
+                    Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
                     Cell::new(i.title.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.album.as_deref().unwrap_or("Unknown")),
@@ -349,6 +424,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
             let list = Table::new(
                 library_items,
                 [
+                    Constraint::Min(3),         // is selected?
                     Constraint::Percentage(25), // title
                     Constraint::Percentage(15), // artist
                     Constraint::Percentage(20), // album
@@ -362,16 +438,22 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
             )
             .block(
                 Block::default()
-                    .title(format!(
-                        "Library: [{}/{}]",
-                        app.library_state.selected().unwrap_or(0) + 1,
-                        app.library_tracks.len()
-                    ))
+                    .title(
+                        format!(
+                            "Library: [{}/{}] - Selected: [{}/{}]",
+                            app.library_state.selected().unwrap_or(0) + 1,
+                            app.library_tracks.len(),
+                            app.library_tracks.iter().filter(|f| f.is_selected).count(),
+                            app.library_tracks.len(),
+                        )
+                        .light_magenta(),
+                    )
                     .borders(Borders::ALL),
             )
             .row_highlight_style(Style::default().reversed())
             .header(
                 Row::new(vec![
+                    Cell::new("   "),
                     Cell::new("Title"),
                     Cell::new("Artist"),
                     Cell::new("Album"),
@@ -386,19 +468,17 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
                 .bottom_margin(1),
             );
 
-            f.render_stateful_widget(list, sections[1], &mut app.library_state);
+            f.render_stateful_widget(list, area, &mut app.library_state);
         }
         app::Tabs::Enrichment => {
             if app.pending_tracks.len() == 0 {
-                f.render_widget(
-                    Paragraph::new("No Tracks Needing Enrichment Found"),
-                    sections[1],
-                );
+                f.render_widget(Paragraph::new("No Tracks Needing Enrichment Found"), area);
                 return;
             }
 
             let enrichment_items = app.pending_tracks.iter().map(|i| {
                 Row::new(vec![
+                    Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
                     Cell::new(i.title.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.album.as_deref().unwrap_or("Unknown")),
@@ -418,6 +498,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
             let list = Table::new(
                 enrichment_items,
                 [
+                    Constraint::Min(3),         // is selected?
                     Constraint::Percentage(25), // title
                     Constraint::Percentage(15), // artist
                     Constraint::Percentage(20), // album
@@ -431,16 +512,22 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
             )
             .block(
                 Block::default()
-                    .title(format!(
-                        "Need Enrichment: [{}/{}]",
-                        app.pending_state.selected().unwrap_or(0) + 1,
-                        app.pending_tracks.len()
-                    ))
+                    .title(
+                        format!(
+                            "Need Enrichment: [{}/{}] - Selected: [{}/{}]",
+                            app.pending_state.selected().unwrap_or(0) + 1,
+                            app.pending_tracks.len(),
+                            app.pending_tracks.iter().filter(|f| f.is_selected).count(),
+                            app.pending_tracks.len(),
+                        )
+                        .light_magenta(),
+                    )
                     .borders(Borders::ALL),
             )
             .row_highlight_style(Style::default().reversed())
             .header(
                 Row::new(vec![
+                    Cell::new("   "),
                     Cell::new("Title"),
                     Cell::new("Artist"),
                     Cell::new("Album"),
@@ -455,16 +542,17 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
                 .bottom_margin(1),
             );
 
-            f.render_stateful_widget(list, sections[1], &mut app.pending_state);
+            f.render_stateful_widget(list, area, &mut app.pending_state);
         }
         app::Tabs::Duplicates => {
             if app.duplicate_tracks.len() == 0 {
-                f.render_widget(Paragraph::new("No Duplicate Tracks Found"), sections[1]);
+                f.render_widget(Paragraph::new("No Duplicate Tracks Found"), area);
                 return;
             }
 
             let duplicate_items = app.duplicate_tracks.iter().map(|i| {
                 Row::new(vec![
+                    Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
                     Cell::new(i.title.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.album.as_deref().unwrap_or("Unknown")),
@@ -484,6 +572,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
             let list = Table::new(
                 duplicate_items,
                 [
+                    Constraint::Min(3),         // is selected?
                     Constraint::Percentage(25), // title
                     Constraint::Percentage(15), // artist
                     Constraint::Percentage(20), // album
@@ -497,16 +586,25 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
             )
             .block(
                 Block::default()
-                    .title(format!(
-                        "Duplicates: [{}/{}]",
-                        app.duplicate_state.selected().unwrap_or(0) + 1,
-                        app.duplicate_tracks.len()
-                    ))
+                    .title(
+                        format!(
+                            "Duplicates: [{}/{}] - Selected: [{}/{}]",
+                            app.duplicate_state.selected().unwrap_or(0) + 1,
+                            app.duplicate_tracks.len(),
+                            app.duplicate_tracks
+                                .iter()
+                                .filter(|f| f.is_selected)
+                                .count(),
+                            app.duplicate_tracks.len(),
+                        )
+                        .light_magenta(),
+                    )
                     .borders(Borders::ALL),
             )
             .row_highlight_style(Style::default().reversed())
             .header(
                 Row::new(vec![
+                    Cell::new("   "),
                     Cell::new("Title"),
                     Cell::new("Artist"),
                     Cell::new("Album"),
@@ -521,7 +619,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
                 .bottom_margin(1),
             );
 
-            f.render_stateful_widget(list, sections[1], &mut app.duplicate_state);
+            f.render_stateful_widget(list, area, &mut app.duplicate_state);
         }
     }
 }
@@ -529,78 +627,73 @@ fn draw_table_content(f: &mut Frame, app: &mut App, sections: &Rc<[Rect]>) {
 fn draw_properties_panel(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(track) = &app.properties_of_track {
         let block = Block::default()
-            .title("Track Properties")
+            .title(Line::from("Track Properties").bold().light_magenta())
             .borders(Borders::ALL);
 
         let inner = block.inner(area);
 
-        let opt = |v: &Option<String>| v.as_deref().unwrap_or("—").to_string();
-
         let lines = vec![
-
             // core tags
             Line::from(vec![
-                Span::styled("Title: ", Style::default().bold()),
+                Span::styled("Title: ", Style::default().bold().light_blue()),
                 Span::raw(track.title.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Artist: ", Style::default().bold()),
+                Span::styled("Artist: ", Style::default().bold().light_blue()),
                 Span::raw(track.artist.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Album: ", Style::default().bold()),
+                Span::styled("Album: ", Style::default().bold().light_blue()),
                 Span::raw(track.album.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Album Artist: ", Style::default().bold()),
+                Span::styled("Album Artist: ", Style::default().bold().light_blue()),
                 Span::raw(track.album_artist.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Album Artists: ", Style::default().bold()),
+                Span::styled("Album Artists: ", Style::default().bold().light_blue()),
                 Span::raw(track.album_artists.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Composer: ", Style::default().bold()),
+                Span::styled("Composer: ", Style::default().bold().light_blue()),
                 Span::raw(track.composer.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Label: ", Style::default().bold()),
+                Span::styled("Label: ", Style::default().bold().light_blue()),
                 Span::raw(track.label.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Genre: ", Style::default().bold()),
+                Span::styled("Genre: ", Style::default().bold().light_blue()),
                 Span::raw(track.genre.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Comment: ", Style::default().bold()),
+                Span::styled("Comment: ", Style::default().bold().light_blue()),
                 Span::raw(track.comment.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Lyrics: ", Style::default().bold()),
+                Span::styled("Lyrics: ", Style::default().bold().light_blue()),
                 Span::raw(track.lyrics.as_deref().unwrap_or("")),
             ]),
-
             // numbering
             Line::from(vec![
-                Span::styled("Track: ", Style::default().bold()),
+                Span::styled("Track: ", Style::default().bold().light_blue()),
                 Span::raw(track.track.map(|v| v.to_string()).unwrap_or_default()),
             ]),
             Line::from(vec![
-                Span::styled("Track Total: ", Style::default().bold()),
+                Span::styled("Track Total: ", Style::default().bold().light_blue()),
                 Span::raw(track.track_total.map(|v| v.to_string()).unwrap_or_default()),
             ]),
             Line::from(vec![
-                Span::styled("Disc: ", Style::default().bold()),
+                Span::styled("Disc: ", Style::default().bold().light_blue()),
                 Span::raw(track.disc.map(|v| v.to_string()).unwrap_or_default()),
             ]),
             Line::from(vec![
-                Span::styled("Disc Total: ", Style::default().bold()),
+                Span::styled("Disc Total: ", Style::default().bold().light_blue()),
                 Span::raw(track.disc_total.map(|v| v.to_string()).unwrap_or_default()),
             ]),
-
             // dates
             Line::from(vec![
-                Span::styled("Release Year: ", Style::default().bold()),
+                Span::styled("Release Year: ", Style::default().bold().light_blue()),
                 Span::raw(
                     track
                         .release_year
@@ -609,21 +702,23 @@ fn draw_properties_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Recording Date: ", Style::default().bold()),
+                Span::styled("Recording Date: ", Style::default().bold().light_blue()),
                 Span::raw(track.recording_date.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Original Release Date: ", Style::default().bold()),
+                Span::styled(
+                    "Original Release Date: ",
+                    Style::default().bold().light_blue(),
+                ),
                 Span::raw(track.original_release_date.as_deref().unwrap_or("")),
             ]),
-
             // release metadata
             Line::from(vec![
-                Span::styled("Release Type: ", Style::default().bold()),
+                Span::styled("Release Type: ", Style::default().bold().light_blue()),
                 Span::raw(track.release_type.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Compilation: ", Style::default().bold()),
+                Span::styled("Compilation: ", Style::default().bold().light_blue()),
                 Span::raw(
                     track
                         .compilation
@@ -632,131 +727,136 @@ fn draw_properties_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 ),
             ]),
             Line::from(vec![
-                Span::styled("ISRC: ", Style::default().bold()),
+                Span::styled("ISRC: ", Style::default().bold().light_blue()),
                 Span::raw(track.isrc.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Barcode: ", Style::default().bold()),
+                Span::styled("Barcode: ", Style::default().bold().light_blue()),
                 Span::raw(track.barcode.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Catalog Number: ", Style::default().bold()),
+                Span::styled("Catalog Number: ", Style::default().bold().light_blue()),
                 Span::raw(track.catalog_number.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("BPM: ", Style::default().bold()),
+                Span::styled("BPM: ", Style::default().bold().light_blue()),
                 Span::raw(track.bpm.map(|v| v.to_string()).unwrap_or_default()),
             ]),
             Line::from(vec![
-                Span::styled("Language: ", Style::default().bold()),
+                Span::styled("Language: ", Style::default().bold().light_blue()),
                 Span::raw(track.language.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Script: ", Style::default().bold()),
+                Span::styled("Script: ", Style::default().bold().light_blue()),
                 Span::raw(track.script.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("Mood: ", Style::default().bold()),
+                Span::styled("Mood: ", Style::default().bold().light_blue()),
                 Span::raw(track.mood.as_deref().unwrap_or("")),
             ]),
-
             // replaygain
             Line::from(vec![
-                Span::styled("RG Track Gain: ", Style::default().bold()),
+                Span::styled("RG Track Gain: ", Style::default().bold().light_blue()),
                 Span::raw(track.replay_gain_track_gain.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("RG Track Peak: ", Style::default().bold()),
+                Span::styled("RG Track Peak: ", Style::default().bold().light_blue()),
                 Span::raw(track.replay_gain_track_peak.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("RG Album Gain: ", Style::default().bold()),
+                Span::styled("RG Album Gain: ", Style::default().bold().light_blue()),
                 Span::raw(track.replay_gain_album_gain.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("RG Album Peak: ", Style::default().bold()),
+                Span::styled("RG Album Peak: ", Style::default().bold().light_blue()),
                 Span::raw(track.replay_gain_album_peak.as_deref().unwrap_or("")),
             ]),
-
             // tech properties
             Line::from(vec![
-                Span::styled("File Format: ", Style::default().bold()),
+                Span::styled("File Format: ", Style::default().bold().light_blue()),
                 Span::raw(track.file_format.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("File Size: ", Style::default().bold()),
-                Span::raw(track.file_size.map(|v| format_size(v as u64, DECIMAL)).unwrap_or_default()),
+                Span::styled("File Size: ", Style::default().bold().light_blue()),
+                Span::raw(
+                    track
+                        .file_size
+                        .map(|v| format_size(v as u64, DECIMAL))
+                        .unwrap_or_default(),
+                ),
             ]),
             Line::from(vec![
-                Span::styled("Duration: ", Style::default().bold()),
+                Span::styled("Duration: ", Style::default().bold().light_blue()),
                 Span::raw(format_track_duration(track.duration).unwrap_or_default()),
             ]),
             Line::from(vec![
-                Span::styled("Bitrate: ", Style::default().bold()),
+                Span::styled("Bitrate: ", Style::default().bold().light_blue()),
                 Span::raw(track.bitrate.map(|v| v.to_string()).unwrap_or_default()),
             ]),
             Line::from(vec![
-                Span::styled("Sample Rate: ", Style::default().bold()),
+                Span::styled("Sample Rate: ", Style::default().bold().light_blue()),
                 Span::raw(track.sample_rate.map(|v| v.to_string()).unwrap_or_default()),
             ]),
             Line::from(vec![
-                Span::styled("Bit Depth: ", Style::default().bold()),
+                Span::styled("Bit Depth: ", Style::default().bold().light_blue()),
                 Span::raw(track.bit_depth.map(|v| v.to_string()).unwrap_or_default()),
             ]),
             Line::from(vec![
-                Span::styled("Channels: ", Style::default().bold()),
+                Span::styled("Channels: ", Style::default().bold().light_blue()),
                 Span::raw(track.channels.map(|v| v.to_string()).unwrap_or_default()),
             ]),
-
             // external IDs
             Line::from(vec![
-                Span::styled("AcoustID: ", Style::default().bold()),
+                Span::styled("AcoustID: ", Style::default().bold().light_blue()),
                 Span::raw(track.acoustid.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("MB Recording ID: ", Style::default().bold()),
+                Span::styled("MB Recording ID: ", Style::default().bold().light_blue()),
                 Span::raw(track.musicbrainz_recording_id.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("MB Track ID: ", Style::default().bold()),
+                Span::styled("MB Track ID: ", Style::default().bold().light_blue()),
                 Span::raw(track.musicbrainz_track_id.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("MB Release ID: ", Style::default().bold()),
+                Span::styled("MB Release ID: ", Style::default().bold().light_blue()),
                 Span::raw(track.musicbrainz_release_id.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("MB Release Group ID: ", Style::default().bold()),
+                Span::styled(
+                    "MB Release Group ID: ",
+                    Style::default().bold().light_blue(),
+                ),
                 Span::raw(track.musicbrainz_release_group_id.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("MB Artist ID: ", Style::default().bold()),
+                Span::styled("MB Artist ID: ", Style::default().bold().light_blue()),
                 Span::raw(track.musicbrainz_artist_id.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("MB Release Artist ID: ", Style::default().bold()),
+                Span::styled(
+                    "MB Release Artist ID: ",
+                    Style::default().bold().light_blue(),
+                ),
                 Span::raw(track.musicbrainz_release_artist_id.as_deref().unwrap_or("")),
             ]),
             Line::from(vec![
-                Span::styled("MB Work ID: ", Style::default().bold()),
+                Span::styled("MB Work ID: ", Style::default().bold().light_blue()),
                 Span::raw(track.musicbrainz_work_id.as_deref().unwrap_or("")),
             ]),
-
             // pipeline state
             Line::from(vec![
-                Span::styled("Status: ", Style::default().bold()),
+                Span::styled("Status: ", Style::default().bold().light_blue()),
                 Span::raw(track.status.as_str()),
             ]),
-
             // file hash
             Line::from(vec![
-                Span::styled("File Hash: ", Style::default().bold()),
+                Span::styled("File Hash: ", Style::default().bold().light_blue()),
                 Span::raw(track.file_hash.as_deref().unwrap_or("")),
             ]),
-
             // file path (duh)
             Line::from(vec![
-                Span::styled("File Path: ", Style::default().bold()),
+                Span::styled("File Path: ", Style::default().bold().light_blue()),
                 Span::raw(track.file_path.to_string_lossy().into_owned()),
             ]),
         ];

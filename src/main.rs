@@ -1,7 +1,8 @@
+mod app;
 mod db;
+mod formatters;
 mod reader;
 mod track;
-mod app;
 mod ui;
 
 use crate::app::App;

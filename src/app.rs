@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::db;
 
 use crate::reader::ScanEvent;
@@ -29,6 +31,8 @@ pub struct App {
     // all duplicate tracks
     pub duplicate_tracks: Vec<TrackSummary>,
     pub duplicate_state: TableState,
+
+    pub selection: std::collections::HashSet<i64>, // selected tracks
 
     // properties panel
     pub properties_panel_open: bool,
@@ -71,6 +75,8 @@ impl App {
             library_state: TableState::default(),
             pending_state: TableState::default(),
             duplicate_state: TableState::default(),
+
+            selection: HashSet::new(),
 
             properties_panel_open: false,
             properties_of_track: None,

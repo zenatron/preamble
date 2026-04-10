@@ -199,6 +199,7 @@ impl fmt::Display for TrackInfo {
 }
 
 pub struct TrackSummary {
+    pub is_selected: bool,
     pub id: Option<i64>,
     pub isrc: Option<String>,
     pub file_path: PathBuf,

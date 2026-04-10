@@ -175,6 +175,7 @@ pub async fn load_tracks(
             .await?
             .into_iter()
             .map(|row| TrackSummary {
+                is_selected: false,
                 id: Some(row.id),
                 isrc: row.isrc,
                 file_path: std::path::PathBuf::from(row.file_path),
@@ -201,6 +202,7 @@ pub async fn load_tracks(
             .await?
             .into_iter()
             .map(|row| TrackSummary {
+                is_selected: false,
                 id: Some(row.id),
                 isrc: row.isrc,
                 file_path: std::path::PathBuf::from(row.file_path),
@@ -227,6 +229,7 @@ pub async fn load_tracks(
             .await?
             .into_iter()
             .map(|row| TrackSummary {
+                is_selected: false,
                 id: Some(row.id),
                 isrc: row.isrc,
                 file_path: std::path::PathBuf::from(row.file_path),
@@ -252,6 +255,7 @@ pub async fn load_tracks(
             .await?
             .into_iter()
             .map(|row| TrackSummary {
+                is_selected: false,
                 id: Some(row.id),
                 isrc: row.isrc,
                 file_path: std::path::PathBuf::from(row.file_path),
