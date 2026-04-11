@@ -11,7 +11,6 @@ use std::sync::Arc;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::Semaphore;
 use sqlx::{SqlitePool};
-use tokio::sync::mpsc::Sender;
 
 pub fn collect_new_paths(
     path: &Path,
@@ -39,7 +38,7 @@ pub fn collect_new_paths(
 pub async fn scan_library(
     pool: SqlitePool,
     path: PathBuf,
-    scan_sender: Sender<ScanEvent>,
+    scan_sender: tokio::sync::mpsc::Sender<ScanEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tx = pool.clone().begin().await?;
 
@@ -81,7 +80,6 @@ pub async fn scan_library(
                 }).await;
                 drop(permit);
                 result
-
             });
         }
 
@@ -121,4 +119,40 @@ pub enum ScanEvent {
     Progress(usize, usize), // processed, total
     Done,
     Error(String),
+}
+
+pub enum ValidateEvent {
+    Done,
+    Error(String),
+}
+
+pub async fn validate_paths(pool: SqlitePool, scan_sender: tokio::sync::oneshot::Sender<ValidateEvent>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let paths_to_check = db::load_tracks_paths(&pool).await?;
+
+    let semaphore = Arc::new(Semaphore::new(32));
+    let mut tasks = FuturesUnordered::new();
+
+    for (id, path) in paths_to_check {
+        let sem = Arc::clone(&semaphore);
+        tasks.push(async move {
+            let permit = sem.acquire().await.unwrap();
+
+            let result = tokio::task::spawn_blocking(move || (id, path.exists())).await;
+            drop(permit);
+            result
+        })
+    }
+
+    while let Some(result) = tasks.next().await {
+        match result {
+            Ok((id, exists)) => {
+                if !exists {
+                    db::update_track_status(&pool, id, "missing").await?;
+                }
+            },
+            _ => {},
+        }
+    }
+    scan_sender.send(ValidateEvent::Done).ok();
+    Ok(())
 }

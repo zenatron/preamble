@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::db;
 
-use crate::reader::ScanEvent;
+use crate::reader::{ScanEvent, ValidateEvent};
 use crate::track::{TrackInfo, TrackSummary};
 use ratatui::widgets::TableState;
 use sqlx::SqlitePool;
@@ -17,6 +17,9 @@ pub struct App {
     pub scan_progress: Option<(usize, usize)>, // (processed, total)
     pub scan_receiver: Option<tokio::sync::mpsc::Receiver<ScanEvent>>,
 
+    pub is_validating: bool,
+    pub spinner_tick: usize,
+    pub validating_receiver: Option<tokio::sync::oneshot::Receiver<ValidateEvent>>,
 
     pub library_stats: LibraryStats,
 
@@ -31,6 +34,9 @@ pub struct App {
     // all duplicate tracks
     pub duplicate_tracks: Vec<TrackSummary>,
     pub duplicate_state: TableState,
+
+    pub missing_tracks: Vec<TrackSummary>,
+    pub missing_state: TableState,
 
     pub selection: std::collections::HashSet<i64>, // selected tracks
 
@@ -59,10 +65,15 @@ impl App {
             scan_progress: None,
             scan_receiver: None,
 
+            is_validating: false,
+            spinner_tick: 0,
+            validating_receiver: None,
+
             library_stats: LibraryStats {
                 total_tracks: db::count_tracks(&pool, None).await? as u32,
                 total_pending: db::count_tracks(&pool, Some("pending")).await? as u32,
                 total_duplicates: db::count_tracks(&pool, Some("duplicate")).await? as u32,
+                total_missing: db::count_tracks(&pool, Some("missing")).await? as u32,
             },
 
             // this later will not happen on initial load and instead
@@ -71,10 +82,12 @@ impl App {
             library_tracks: db::load_tracks(&pool, None, None).await?,
             pending_tracks: db::load_tracks(&pool, Some("pending"), None).await?,
             duplicate_tracks: db::load_tracks(&pool, Some("duplicate"), None).await?,
+            missing_tracks: db::load_tracks(&pool, Some("missing"), None).await?,
 
             library_state: TableState::default(),
             pending_state: TableState::default(),
             duplicate_state: TableState::default(),
+            missing_state: TableState::default(),
 
             selection: HashSet::new(),
 
@@ -91,13 +104,16 @@ impl App {
         app.library_stats.total_tracks = db::count_tracks(&app.pool, None).await? as u32;
         app.library_stats.total_pending = db::count_tracks(&app.pool, Some("pending")).await? as u32;
         app.library_stats.total_duplicates = db::count_tracks(&app.pool, Some("duplicate")).await? as u32;
+        app.library_stats.total_missing = db::count_tracks(&app.pool, Some("missing")).await? as u32;
 
         app.library_tracks = db::load_tracks(&app.pool, None, None).await?;
         app.pending_tracks = db::load_tracks(&app.pool, Some("pending"), None).await?;
         app.duplicate_tracks = db::load_tracks(&app.pool, Some("duplicate"), None).await?;
+        app.missing_tracks = db::load_tracks(&app.pool, Some("missing"), None).await?;
 
         app.properties_panel_open = false;
         app.properties_of_track = None;
+
         Ok(())
     }
 }
@@ -107,12 +123,14 @@ pub struct LibraryStats {
     pub total_tracks: u32,
     pub total_pending: u32,
     pub total_duplicates: u32,
+    pub total_missing: u32,
 }
 
 pub enum Tabs {
     Library,
     Enrichment,
     Duplicates,
+    Missing,
 }
 
 pub enum Screens {

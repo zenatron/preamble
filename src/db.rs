@@ -1,6 +1,6 @@
 use crate::track::{TrackInfo, TrackSummary};
 use sqlx::{SqlitePool};
-use std::collections::HashSet;
+use std::{collections::HashSet, path::PathBuf};
 
 // initializes the Sqlite Pool
 pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
@@ -363,5 +363,20 @@ pub async fn count_tracks(
 
 pub async fn truncate_tracks(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query!(r#"DELETE FROM tracks"#).execute(pool).await?;
+    Ok(())
+}
+
+pub async fn load_tracks_paths(pool: &SqlitePool) -> Result<Vec<(i64, PathBuf)>, sqlx::Error> {
+    let query_result = sqlx::query!(r#"SELECT id, file_path FROM tracks"#)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|r| (r.id.unwrap(), PathBuf::from(r.file_path)))
+        .collect();
+    Ok(query_result)
+}
+
+pub async fn update_track_status(pool: &SqlitePool, id: i64, new_status: &str) -> Result<(), sqlx::Error> {
+    sqlx::query!(r#"UPDATE tracks SET status = ? WHERE id = ?"#, new_status, id).execute(pool).await?;
     Ok(())
 }

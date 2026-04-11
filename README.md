@@ -99,7 +99,8 @@ Full tag metadata including title, artist, album, album artist, composer, label,
 - [ ] Dead letter queue for tracks that fail matching
 
 ### TUI
-- [ ] Track detail view on selection
+- [x] Track detail view on selection
+- [ ] SEARCH MODE!!!!
 - [ ] Manual tag editing
 - [ ] Watch mode — monitor directory for new files
 - [ ] Structured logging with `tracing`

@@ -1,9 +1,7 @@
-use std::rc::Rc;
-
 use crate::app::{self, App};
 use crate::db::{self, load_track_full};
 use crate::formatters::{format_thou, format_track_duration};
-use crate::reader::scan_library;
+use crate::reader::{ScanEvent, ValidateEvent, scan_library, validate_paths};
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use humansize::{DECIMAL, format_size};
@@ -34,7 +32,7 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Fill(1),   // top padding
         Constraint::Length(6), // title
         Constraint::Length(1), // version
-        Constraint::Length(4), // stats
+        Constraint::Length(5), // stats
         Constraint::Length(2), // path
         Constraint::Length(4), // tooltips
         Constraint::Fill(1),   // bottom padding
@@ -61,15 +59,26 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
             .blue(),
         sections[2],
     );
+    let stats = ratatui::text::Text::from(vec![
+        Line::from(vec![
+            Span::raw("Total Tracks: "),
+            Span::styled(format_thou(app.library_stats.total_tracks), Style::default().white().bold()),
+        ]),
+        Line::from(vec![
+            Span::raw("Pending Enrichment: "),
+            Span::styled(format_thou(app.library_stats.total_pending), Style::default().yellow().bold()),
+        ]),
+        Line::from(vec![
+            Span::raw("Duplicate Tracks: "),
+            Span::styled(format_thou(app.library_stats.total_duplicates), Style::default().light_red().bold()),
+        ]),
+        Line::from(vec![
+            Span::raw("Missing Tracks: "),
+            Span::styled(format_thou(app.library_stats.total_missing), Style::default().light_red().bold()),
+        ]),
+    ]);
     f.render_widget(
-        Paragraph::new(format!(
-            "Total Tracks: {}\nPending Enrichment: {}\nDuplicate Tracks: {}",
-            format_thou(app.library_stats.total_tracks),
-            format_thou(app.library_stats.total_pending),
-            format_thou(app.library_stats.total_duplicates)
-        ))
-        .alignment(ratatui::layout::Alignment::Center)
-        .light_green(),
+        Paragraph::new(stats).alignment(ratatui::layout::Alignment::Center),
         sections[3],
     );
     f.render_widget(
@@ -80,11 +89,52 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
     );
     f.render_widget(
         Paragraph::new(format!(
-            "[s] : Scan Library (updates any newly added tracks)\n[r] : Fresh Scan (WARNING: completely rebuilds database)\n[enter] : View Library\n[q] : Quit"
+            "[s] : Scan Library (updates any newly added tracks)\n[r] : Fresh Scan (WARNING: completely rebuilds database)\n[v] : Validate Paths\n[enter] : View Library\n[q] : Quit"
         )).style(Style::new().add_modifier(Modifier::BOLD))
         .alignment(ratatui::layout::Alignment::Center),
         sections[5],
     );
+
+    // check if we are validating, then render the popup
+    if app.is_validating {
+        draw_spinner_popup(f, app, area);
+    }
+}
+
+fn draw_spinner_popup(f: &mut Frame, app: &mut App, area: Rect) {
+    let outer = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(9), // pane height
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let inner = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(27), // pane width
+        Constraint::Fill(1),
+    ])
+    .split(outer[1]);
+
+    f.render_widget(ratatui::widgets::Clear, inner[1]);
+
+    let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let spinner = frames[app.spinner_tick / 6 % frames.len()];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Validating")
+        .yellow();
+    let text = Paragraph::new(vec![
+        Line::raw(""),
+        Line::raw(""),
+        Line::raw(""),
+        Line::from(format!("{} Checking paths...", spinner)).light_yellow(),
+    ])
+    .alignment(ratatui::layout::Alignment::Center)
+    .centered()
+    .block(block);
+    f.render_widget(text, inner[1]);
 }
 
 fn draw_main_screen(f: &mut Frame, app: &mut App, area: Rect) {
@@ -127,7 +177,8 @@ fn draw_scanning_screen(f: &mut Frame, app: &mut App, area: Rect) {
     let (n, total) = app.scan_progress.unwrap_or((0, 1));
     let ratio = n as f64 / total as f64;
     let gauge = Gauge::default()
-        .block(Block::default().title("Scanning...").borders(Borders::ALL))
+        .block(Block::default().title("Scanning...").borders(Borders::ALL).light_green())
+        .gauge_style(Style::default().light_green().fg(ratatui::style::Color::Black))
         .ratio(ratio)
         .label(format!("[{}/{}]", n, total));
 
@@ -174,7 +225,7 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
     if key.code == KeyCode::Char('r') {
         if let Some(ref path) = app.pending_scan_path {
             db::truncate_tracks(&app.pool).await.ok();
-            let (tx, rx) = tokio::sync::mpsc::channel(100);
+            let (tx, rx) = tokio::sync::mpsc::channel::<ScanEvent>(100);
             app.scan_receiver = Some(rx);
             tokio::spawn(scan_library(app.pool.clone(), path.clone(), tx));
             app.current_screen = app::Screens::Scanning;
@@ -182,6 +233,14 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
             app.status_message = Some("Path not provided.".to_string());
         }
     }
+
+    if key.code == KeyCode::Char('v') {
+        let (tx, rx) = tokio::sync::oneshot::channel::<ValidateEvent>();
+        app.is_validating = true;
+        app.validating_receiver = Some(rx);
+        tokio::spawn(validate_paths(app.pool.clone(), tx));
+    }
+
     if key.code == KeyCode::Enter {
         app.current_screen = app::Screens::Main;
     }
@@ -213,6 +272,12 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                     load_selected_track(app).await;
                 }
             }
+            app::Tabs::Missing => {
+                app.missing_state.select_previous();
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
         }
     }
     if key.code == KeyCode::Down {
@@ -236,6 +301,12 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                     load_selected_track(app).await;
                 }
             }
+            app::Tabs::Missing => {
+                app.missing_state.select_next();
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
         }
     }
     if key.code == KeyCode::Tab {
@@ -254,6 +325,12 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                 }
             }
             app::Tabs::Duplicates => {
+                app.current_tab = app::Tabs::Missing;
+                if app.properties_panel_open {
+                    load_selected_track(app).await;
+                }
+            }
+            app::Tabs::Missing => {
                 app.current_tab = app::Tabs::Library;
                 if app.properties_panel_open {
                     load_selected_track(app).await;
@@ -280,6 +357,11 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                     app.duplicate_tracks[idx].is_selected = !app.duplicate_tracks[idx].is_selected;
                 }
             }
+            app::Tabs::Missing => {
+                if let Some(idx) = app.missing_state.selected() {
+                    app.missing_tracks[idx].is_selected = !app.missing_tracks[idx].is_selected;
+                }
+            }
         }
     }
 
@@ -296,6 +378,10 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                 .for_each(|f| f.is_selected = true),
             app::Tabs::Duplicates => app
                 .duplicate_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = true),
+            app::Tabs::Missing => app
+                .missing_tracks
                 .iter_mut()
                 .for_each(|f| f.is_selected = true),
         }
@@ -316,6 +402,10 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                 .duplicate_tracks
                 .iter_mut()
                 .for_each(|f| f.is_selected = false),
+            app::Tabs::Missing => app
+                .missing_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = false),
         }
     }
 
@@ -332,6 +422,10 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                 .for_each(|f| f.is_selected = !f.is_selected),
             app::Tabs::Duplicates => app
                 .duplicate_tracks
+                .iter_mut()
+                .for_each(|f| f.is_selected = !f.is_selected),
+            app::Tabs::Missing => app
+                .missing_tracks
                 .iter_mut()
                 .for_each(|f| f.is_selected = !f.is_selected),
         }
@@ -366,6 +460,11 @@ async fn load_selected_track(app: &mut App) {
                 selected_track_db_id = app.duplicate_tracks[idx].id.unwrap_or(0);
             }
         }
+        app::Tabs::Missing => {
+            if let Some(idx) = app.missing_state.selected() {
+                selected_track_db_id = app.missing_tracks[idx].id.unwrap_or(0);
+            }
+        }
     }
     app.properties_of_track = load_track_full(&app.pool, selected_track_db_id)
         .await
@@ -374,13 +473,16 @@ async fn load_selected_track(app: &mut App) {
 }
 
 fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
-    let tab_bar = ratatui::widgets::Tabs::new(vec!["Library", "Enrichment", "Duplicates"])
-        .select(match app.current_tab {
-            app::Tabs::Library => 0,
-            app::Tabs::Enrichment => 1,
-            app::Tabs::Duplicates => 2,
-        })
-        .block(Block::default().borders(Borders::ALL).light_green());
+    let tab_bar =
+        ratatui::widgets::Tabs::new(vec!["Library", "Enrichment", "Duplicates", "Missing"])
+            .select(match app.current_tab {
+                app::Tabs::Library => 0,
+                app::Tabs::Enrichment => 1,
+                app::Tabs::Duplicates => 2,
+                app::Tabs::Missing => 3,
+            })
+            .block(Block::default().borders(Borders::ALL).light_green())
+            .highlight_style(Style::default().bold().light_green().reversed());
 
     f.render_widget(tab_bar, area);
 }
@@ -403,7 +505,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
 
             let library_items = app.library_tracks.iter().map(|i| {
-                Row::new(vec![
+                let row = Row::new(vec![
                     Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
                     Cell::new(i.title.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
@@ -418,7 +520,12 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
                     Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
                     Cell::new(i.status.as_str()),
                     // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
-                ])
+                ]);
+                if i.is_selected {
+                    row.style(Style::default().light_green())
+                } else {
+                    row
+                }
             });
 
             let list = Table::new(
@@ -477,7 +584,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
 
             let enrichment_items = app.pending_tracks.iter().map(|i| {
-                Row::new(vec![
+                let row = Row::new(vec![
                     Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
                     Cell::new(i.title.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
@@ -492,7 +599,12 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
                     Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
                     Cell::new(i.status.as_str()),
                     // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
-                ])
+                ]);
+                if i.is_selected {
+                    row.style(Style::default().light_green())
+                } else {
+                    row
+                }
             });
 
             let list = Table::new(
@@ -551,7 +663,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
 
             let duplicate_items = app.duplicate_tracks.iter().map(|i| {
-                Row::new(vec![
+                let row = Row::new(vec![
                     Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
                     Cell::new(i.title.as_deref().unwrap_or("Unknown")),
                     Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
@@ -566,7 +678,12 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
                     Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
                     Cell::new(i.status.as_str()),
                     // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
-                ])
+                ]);
+                if i.is_selected {
+                    row.style(Style::default().light_green())
+                } else {
+                    row
+                }
             });
 
             let list = Table::new(
@@ -620,6 +737,85 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
             );
 
             f.render_stateful_widget(list, area, &mut app.duplicate_state);
+        }
+        app::Tabs::Missing => {
+            if app.missing_tracks.len() == 0 {
+                f.render_widget(Paragraph::new("No Missing Tracks Found"), area);
+                return;
+            }
+
+            let missing_items = app.missing_tracks.iter().map(|i| {
+                let row = Row::new(vec![
+                    Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
+                    Cell::new(i.title.as_deref().unwrap_or("Unknown")),
+                    Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
+                    Cell::new(i.album.as_deref().unwrap_or("Unknown")),
+                    Cell::new(i.file_format.as_deref().unwrap_or("Unknown")),
+                    Cell::new(
+                        i.file_size
+                            .map(|v| format_size(v as u64, DECIMAL))
+                            .unwrap_or("-".to_string()),
+                    ),
+                    Cell::new(format_track_duration(i.duration).unwrap_or("-".to_string())),
+                    Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
+                    Cell::new(i.status.as_str()),
+                    // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
+                ]);
+                if i.is_selected {
+                    row.style(Style::default().light_green())
+                } else {
+                    row
+                }
+            });
+
+            let list = Table::new(
+                missing_items,
+                [
+                    Constraint::Min(3),         // is selected?
+                    Constraint::Percentage(25), // title
+                    Constraint::Percentage(15), // artist
+                    Constraint::Percentage(20), // album
+                    Constraint::Percentage(10), // file format
+                    Constraint::Percentage(10), // file size
+                    Constraint::Percentage(5),  // duration
+                    Constraint::Percentage(5),  // bitrate
+                    Constraint::Percentage(10), // status
+                                                // Constraint::Percentage(10), // file hash
+                ],
+            )
+            .block(
+                Block::default()
+                    .title(
+                        format!(
+                            "Missing: [{}/{}] - Selected: [{}/{}]",
+                            app.missing_state.selected().unwrap_or(0) + 1,
+                            app.missing_tracks.len(),
+                            app.missing_tracks.iter().filter(|f| f.is_selected).count(),
+                            app.missing_tracks.len(),
+                        )
+                        .light_magenta(),
+                    )
+                    .borders(Borders::ALL),
+            )
+            .row_highlight_style(Style::default().reversed())
+            .header(
+                Row::new(vec![
+                    Cell::new("   "),
+                    Cell::new("Title"),
+                    Cell::new("Artist"),
+                    Cell::new("Album"),
+                    Cell::new("Format"),
+                    Cell::new("Size"),
+                    Cell::new("Duration"),
+                    Cell::new("Bitrate"),
+                    Cell::new("Status"),
+                    // Cell::new("File Hash"),
+                ])
+                .bold()
+                .bottom_margin(1),
+            );
+
+            f.render_stateful_widget(list, area, &mut app.missing_state);
         }
     }
 }
