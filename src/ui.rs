@@ -62,19 +62,31 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
     let stats = ratatui::text::Text::from(vec![
         Line::from(vec![
             Span::raw("Total Tracks: "),
-            Span::styled(format_thou(app.library_stats.total_tracks), Style::default().white().bold()),
+            Span::styled(
+                format_thou(app.library_stats.total_tracks),
+                Style::default().white().bold(),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Pending Enrichment: "),
-            Span::styled(format_thou(app.library_stats.total_pending), Style::default().yellow().bold()),
+            Span::styled(
+                format_thou(app.library_stats.total_pending),
+                Style::default().yellow().bold(),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Duplicate Tracks: "),
-            Span::styled(format_thou(app.library_stats.total_duplicates), Style::default().light_red().bold()),
+            Span::styled(
+                format_thou(app.library_stats.total_duplicates),
+                Style::default().light_red().bold(),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Missing Tracks: "),
-            Span::styled(format_thou(app.library_stats.total_missing), Style::default().light_red().bold()),
+            Span::styled(
+                format_thou(app.library_stats.total_missing),
+                Style::default().light_red().bold(),
+            ),
         ]),
     ]);
     f.render_widget(
@@ -157,6 +169,10 @@ fn draw_main_screen(f: &mut Frame, app: &mut App, area: Rect) {
     draw_tab_bar(f, app, sections[0]);
     draw_shortcuts_row(f, sections[1]);
     draw_table_content(f, app, sections[2]);
+
+    if app.pending_delete {
+        draw_delete_prompt(f, area);
+    }
 }
 
 fn draw_scanning_screen(f: &mut Frame, app: &mut App, area: Rect) {
@@ -177,8 +193,17 @@ fn draw_scanning_screen(f: &mut Frame, app: &mut App, area: Rect) {
     let (n, total) = app.scan_progress.unwrap_or((0, 1));
     let ratio = n as f64 / total as f64;
     let gauge = Gauge::default()
-        .block(Block::default().title("Scanning...").borders(Borders::ALL).light_green())
-        .gauge_style(Style::default().light_green().fg(ratatui::style::Color::Black))
+        .block(
+            Block::default()
+                .title("Scanning...")
+                .borders(Borders::ALL)
+                .light_green(),
+        )
+        .gauge_style(
+            Style::default()
+                .light_green()
+                .fg(ratatui::style::Color::Black),
+        )
         .ratio(ratio)
         .label(format!("[{}/{}]", n, total));
 
@@ -213,7 +238,7 @@ pub async fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error 
 async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
     if key.code == KeyCode::Char('s') {
         if let Some(ref path) = app.pending_scan_path {
-            let (tx, rx) = tokio::sync::mpsc::channel(100);
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
             app.scan_receiver = Some(rx);
             tokio::spawn(scan_library(app.pool.clone(), path.clone(), tx));
             app.current_screen = app::Screens::Scanning;
@@ -310,6 +335,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         }
     }
     if key.code == KeyCode::Tab {
+        app.pending_delete = false;
         // cycle app tabs
         match app.current_tab {
             app::Tabs::Library => {
@@ -431,7 +457,46 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         }
     }
 
+    // handle DELETE tracks
+    if key.code == KeyCode::Char('d') {
+        if app.pending_delete {
+            match app.current_tab {
+                app::Tabs::Library => {}
+                app::Tabs::Enrichment => {}
+                app::Tabs::Duplicates => {
+                    for track in &app.duplicate_tracks {
+                        if track.is_selected {
+                            if let Some(id) = track.id {
+                                std::fs::remove_file(track.file_path.clone()).ok();
+                                db::delete_single_track(&app.pool, id).await.ok();
+                            }
+                        }
+                    }
+                }
+                app::Tabs::Missing => {
+                    for track in &app.missing_tracks {
+                        if track.is_selected {
+                            if let Some(id) = track.id {
+                                std::fs::remove_file(track.file_path.clone()).ok();
+                                db::delete_single_track(&app.pool, id).await.ok();
+                            }
+                        }
+                    }
+                }
+            }
+            App::reload(app).await.ok();
+            app.pending_delete = false;
+        } else {
+            app.pending_delete = true;
+        }
+    }
+
+    // DO NOT PUT ANY HANDLERS BELOW THIS ONE
     if key.code == KeyCode::Esc {
+        if app.pending_delete {
+            app.pending_delete = false;
+            return;
+        }
         if app.properties_panel_open {
             app.properties_panel_open = false;
         } else {
@@ -494,6 +559,40 @@ fn draw_shortcuts_row(f: &mut Frame, area: Rect) {
         .blue(),
         area
     );
+}
+
+fn draw_delete_prompt(f: &mut Frame, area: Rect) {
+    let outer = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(9), // pane height
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let inner = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(48), // pane width
+        Constraint::Fill(1),
+    ])
+    .split(outer[1]);
+
+    f.render_widget(ratatui::widgets::Clear, inner[1]);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("DELETE?")
+        .red();
+    let text = Paragraph::new(vec![
+        Line::raw(""),
+        Line::raw(""),
+        Line::from(format!("Do you want to delete ALL selected tracks?")).light_red().centered(),
+        Line::raw(""),
+        Line::from(format!("[ESC] CANCEL /// [D] DELETE")).light_red().centered(),
+    ])
+    .alignment(ratatui::layout::Alignment::Center)
+    .centered()
+    .block(block);
+    f.render_widget(text, inner[1]);
 }
 
 fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {

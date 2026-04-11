@@ -43,7 +43,7 @@ pub async fn scan_library(
     let mut tx = pool.clone().begin().await?;
 
     // create semaphore with 32 concurrent threads. this seems to be optimal
-    let semaphore = Arc::new(Semaphore::new(32));
+    let semaphore = Arc::new(Semaphore::new(8));
 
     // loads existing track paths into a HashSet for fast lookup
     let existing_tracks = db::load_existing_paths(&pool).await?;
@@ -68,6 +68,7 @@ pub async fn scan_library(
         let mut processed = 0usize;
         let mut tasks = FuturesUnordered::new();
 
+        eprintln!("BEFORE SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
         for p in new_track_paths {
             let sem = Arc::clone(&semaphore);
             tasks.push(async move {
@@ -102,7 +103,7 @@ pub async fn scan_library(
                     }
                     db::insert_track(&mut tx, &track).await?;
                     processed += 1;
-                    scan_sender.send(ScanEvent::Progress(processed, total)).await.ok();
+                    scan_sender.try_send(ScanEvent::Progress(processed, total)).ok();
                 }
                 Ok(Err(e)) => eprintln!("Failed to read tags: {:?}", e),
                 Err(e) => eprintln!("Task panicked: {:?}", e),
@@ -110,6 +111,7 @@ pub async fn scan_library(
         }
         
         tx.commit().await?;
+        eprintln!("AFTER SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
     }
     scan_sender.send(ScanEvent::Done).await.ok();
     Ok(())

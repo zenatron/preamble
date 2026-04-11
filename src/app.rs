@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::db;
 
 use crate::reader::{ScanEvent, ValidateEvent};
@@ -21,6 +19,8 @@ pub struct App {
     pub spinner_tick: usize,
     pub validating_receiver: Option<tokio::sync::oneshot::Receiver<ValidateEvent>>,
 
+    pub pending_delete: bool,
+
     pub library_stats: LibraryStats,
 
     // vec of all tracks (summary)
@@ -35,10 +35,9 @@ pub struct App {
     pub duplicate_tracks: Vec<TrackSummary>,
     pub duplicate_state: TableState,
 
+    // all orphaned tracks in th DB (missing on disk)
     pub missing_tracks: Vec<TrackSummary>,
     pub missing_state: TableState,
-
-    pub selection: std::collections::HashSet<i64>, // selected tracks
 
     // properties panel
     pub properties_panel_open: bool,
@@ -69,6 +68,8 @@ impl App {
             spinner_tick: 0,
             validating_receiver: None,
 
+            pending_delete: false,
+
             library_stats: LibraryStats {
                 total_tracks: db::count_tracks(&pool, None).await? as u32,
                 total_pending: db::count_tracks(&pool, Some("pending")).await? as u32,
@@ -88,8 +89,6 @@ impl App {
             pending_state: TableState::default(),
             duplicate_state: TableState::default(),
             missing_state: TableState::default(),
-
-            selection: HashSet::new(),
 
             properties_panel_open: false,
             properties_of_track: None,

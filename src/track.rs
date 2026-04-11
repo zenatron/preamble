@@ -7,6 +7,70 @@ use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use std::path::{Path, PathBuf};
 
+pub fn _read_tags_fake(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(TrackInfo {
+        id: None,
+        file_path: path.to_path_buf(),
+
+        // track info
+        title: None,
+        artist: None,
+        album: None,
+        album_artist: None,
+        album_artists: None,
+        composer: None,
+        label: None,
+        genre: None,
+        comment: None,
+        lyrics: None,
+        track: None,
+        track_total: None,
+        disc: None,
+        disc_total: None,
+        release_year: None,
+        recording_date: None,
+        original_release_date: None,
+        release_type: None,
+        compilation: None,
+        isrc: None,
+        barcode: None,
+        catalog_number: None,
+        bpm: None,
+        language: None,
+        script: None,
+        mood: None,
+        replay_gain_track_gain: None,
+        replay_gain_track_peak: None,
+        replay_gain_album_gain: None,
+        replay_gain_album_peak: None,
+
+        // tech properties
+        file_format: None,
+        file_size: None,
+        duration: None,
+        bitrate: None,
+        sample_rate: None,
+        bit_depth: None,
+        channels: None,
+
+        // dumb stuff
+        acoustid: None,
+        musicbrainz_recording_id: None,
+        musicbrainz_track_id: None,
+        musicbrainz_release_id: None,
+        musicbrainz_release_group_id: None,
+        musicbrainz_artist_id: None,
+        musicbrainz_release_artist_id: None,
+        musicbrainz_work_id: None,
+
+        // pipeline state
+        status: "dummy".to_string(),
+
+        // file hash
+        file_hash: None,
+    })
+}
+
 pub fn read_tags(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + Send + Sync>> {
     let reader = Probe::open(path)?;
     let file = reader.read()?;
@@ -39,7 +103,7 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + S
         track: tag.and_then(|t| t.track()),
         track_total: tag.and_then(|t| t.track_total()),
         disc: tag.and_then(|t| t.disk()),
-        disc_total: tag.and_then(|t| t.disk_total()),
+        disc_total: tag.and_then(|t: &lofty::tag::Tag| t.disk_total()),
         release_year: tag.and_then(|t| t.year()),
         recording_date: get(ItemKey::RecordingDate),
         original_release_date: get(ItemKey::OriginalReleaseDate),
@@ -196,6 +260,15 @@ impl fmt::Display for TrackInfo {
             self.bitrate
         )
     }
+}
+
+// TODO: implement this
+#[allow(dead_code)]
+pub enum TrackStatus {
+    Pending,
+    Enrichment,
+    Duplicate,
+    Missing,
 }
 
 pub struct TrackSummary {

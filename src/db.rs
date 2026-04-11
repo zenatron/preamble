@@ -366,6 +366,11 @@ pub async fn truncate_tracks(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+pub async fn delete_single_track(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query!(r#"DELETE FROM tracks WHERE id = ?"#, id).execute(pool).await?;
+    Ok(())
+}
+
 pub async fn load_tracks_paths(pool: &SqlitePool) -> Result<Vec<(i64, PathBuf)>, sqlx::Error> {
     let query_result = sqlx::query!(r#"SELECT id, file_path FROM tracks"#)
         .fetch_all(pool)
