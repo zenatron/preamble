@@ -159,17 +159,18 @@ pub async fn insert_track(
 // potentially expand later to allow more flexibility in queries
 pub async fn load_tracks(
     pool: &SqlitePool,
-    status_filter: Option<&str>,
     id: Option<i64>,
+    status_filter: Option<&str>,
+    search_query: Option<&str>,
 ) -> Result<Vec<TrackSummary>, sqlx::Error> {
-    match (id, status_filter) {
-        (Some(id_val), Some(status)) => {
+    match (id, status_filter, search_query) {
+        (Some(id_val), Some(status), None) => {
             Ok(sqlx::query!(
                 r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash
                 FROM tracks WHERE id = ? AND status = ?"#,
                 id_val,
-                status
+                status,
             )
             .fetch_all(pool)
             .await?
@@ -191,7 +192,7 @@ pub async fn load_tracks(
             })
             .collect())
         }
-        (Some(id_val), None) => {
+        (Some(id_val), None, None) => {
             Ok(sqlx::query!(
                 r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash
@@ -218,7 +219,7 @@ pub async fn load_tracks(
             })
             .collect())
         }
-        (None, Some(status)) => {
+        (None, Some(status), None) => {
             Ok(sqlx::query!(
                 r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash
@@ -245,7 +246,66 @@ pub async fn load_tracks(
             })
             .collect())
         }
-        (None, None) => {
+        (None, Some(status), Some(query)) => {
+            let pattern = format!("%{}%", query);
+            Ok(sqlx::query!(
+                r#"SELECT id, isrc, file_path, title, artist, album,
+                file_format, file_size, duration, bitrate, status, file_hash
+                FROM tracks 
+                WHERE (title LIKE ? OR artist LIKE ? OR album LIKE ?)
+                AND status = ?"#,
+                pattern, pattern, pattern,
+                status
+            )
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| TrackSummary {
+                is_selected: false,
+                id: Some(row.id),
+                isrc: row.isrc,
+                file_path: std::path::PathBuf::from(row.file_path),
+                title: row.title,
+                artist: row.artist,
+                album: row.album,
+                file_format: row.file_format,
+                file_size: row.file_size,
+                duration: row.duration.map(|v| v as u32),
+                bitrate: row.bitrate.map(|v| v as u32),
+                status: row.status,
+                file_hash: row.file_hash,
+            })
+            .collect())
+        }
+        (None, None, Some(query)) => {
+            let pattern = format!("%{}%", query);
+            Ok(sqlx::query!(
+                r#"SELECT id, isrc, file_path, title, artist, album,
+                file_format, file_size, duration, bitrate, status, file_hash
+                FROM tracks WHERE (title LIKE ? OR artist LIKE ? OR album LIKE ?)"#,
+                pattern, pattern, pattern
+            )
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| TrackSummary {
+                is_selected: false,
+                id: Some(row.id),
+                isrc: row.isrc,
+                file_path: std::path::PathBuf::from(row.file_path),
+                title: row.title,
+                artist: row.artist,
+                album: row.album,
+                file_format: row.file_format,
+                file_size: row.file_size,
+                duration: row.duration.map(|v| v as u32),
+                bitrate: row.bitrate.map(|v| v as u32),
+                status: row.status,
+                file_hash: row.file_hash,
+            })
+            .collect())
+        }
+        (None, None, None) => {
             Ok(sqlx::query!(
                 r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash
@@ -271,6 +331,7 @@ pub async fn load_tracks(
             })
             .collect())
         }
+        _ => {Ok(Vec::new())}
     }
 }
 

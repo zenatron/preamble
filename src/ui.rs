@@ -131,7 +131,7 @@ fn draw_spinner_popup(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(ratatui::widgets::Clear, inner[1]);
 
     let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let spinner = frames[app.spinner_tick / 6 % frames.len()];
+    let spinner = frames[app.spinner_tick % frames.len()];
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -160,15 +160,17 @@ fn draw_main_screen(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let sections = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(1),
+        Constraint::Length(3), // tab bar
+        Constraint::Length(1), // shortcuts text
+        Constraint::Length(3), // search bar
         Constraint::Min(0),
     ])
     .split(area);
 
     draw_tab_bar(f, app, sections[0]);
     draw_shortcuts_row(f, sections[1]);
-    draw_table_content(f, app, sections[2]);
+    draw_search_bar(f, app, sections[2]);
+    draw_table_content(f, app, sections[3]);
 
     if app.pending_delete {
         draw_delete_prompt(f, area);
@@ -211,10 +213,11 @@ fn draw_scanning_screen(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 pub async fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if crossterm::event::poll(std::time::Duration::from_millis(16))? {
+    // poll at 15 FPS
+    if crossterm::event::poll(std::time::Duration::from_millis(1000 / 15))? {
         match crossterm::event::read()? {
             Event::Key(key) => {
-                if key.code == KeyCode::Char('q') {
+                if key.code == KeyCode::Char('q') && !app.search_mode {
                     app.should_quit = true;
                 }
 
@@ -271,7 +274,82 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
     }
 }
 
+async fn handle_search_query(app: &mut App) {
+    match app.current_tab {
+        app::Tabs::Library => {
+            app.library_tracks = db::load_tracks(&app.pool, None, None, Some(&app.search_query))
+                .await
+                .unwrap_or_default();
+            if !app.library_tracks.is_empty() {
+                app.library_state.select(Some(0));
+            } else {
+                app.library_state.select(None);
+            }
+        }
+        app::Tabs::Enrichment => {
+            app.pending_tracks =
+                db::load_tracks(&app.pool, None, Some("pending"), Some(&app.search_query))
+                    .await
+                    .unwrap_or_default();
+            if !app.pending_tracks.is_empty() {
+                app.pending_state.select(Some(0));
+            } else {
+                app.pending_state.select(None);
+            }
+        }
+        app::Tabs::Duplicates => {
+            app.duplicate_tracks =
+                db::load_tracks(&app.pool, None, Some("duplicate"), Some(&app.search_query))
+                    .await
+                    .unwrap_or_default();
+            if !app.duplicate_tracks.is_empty() {
+                app.duplicate_state.select(Some(0));
+            } else {
+                app.duplicate_state.select(None);
+            }
+        }
+        app::Tabs::Missing => {
+            app.missing_tracks =
+                db::load_tracks(&app.pool, None, Some("missing"), Some(&app.search_query))
+                    .await
+                    .unwrap_or_default();
+            if !app.missing_tracks.is_empty() {
+                app.missing_state.select(Some(0));
+            } else {
+                app.missing_state.select(None);
+            }
+        }
+    }
+}
+
 async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
+    // handle searching
+    if key.code == KeyCode::Char('/') {
+        app.search_mode = true;
+    }
+    {
+        if app.search_mode {
+            if key.code == KeyCode::Backspace {
+                app.search_query.pop();
+                handle_search_query(app).await;
+            }
+            if key.code == KeyCode::Esc {
+                app.search_mode = false;
+                app.search_query = String::new();
+                App::reload(app).await.ok();
+            }
+            if key.code == KeyCode::Enter {
+                app.search_mode = false;
+                handle_search_query(app).await;
+            }
+            if let KeyCode::Char(c) = key.code {
+                app.search_query.push(c);
+                handle_search_query(app).await;
+            }
+            return;
+        }
+    }
+
     if key.code == KeyCode::Char('p') {
         app.properties_panel_open = true;
         load_selected_track(app).await;
@@ -280,25 +358,33 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         // highlight previous track
         match app.current_tab {
             app::Tabs::Library => {
-                app.library_state.select_previous();
+                if app.library_state.selected().is_some() {
+                    app.library_state.select_previous();
+                }
                 if app.properties_panel_open {
                     load_selected_track(app).await;
                 }
             }
             app::Tabs::Enrichment => {
-                app.pending_state.select_previous();
+                if app.pending_state.selected().is_some() {
+                    app.pending_state.select_previous();
+                }
                 if app.properties_panel_open {
                     load_selected_track(app).await;
                 }
             }
             app::Tabs::Duplicates => {
-                app.duplicate_state.select_previous();
+                if app.duplicate_state.selected().is_some() {
+                    app.duplicate_state.select_previous();
+                }
                 if app.properties_panel_open {
                     load_selected_track(app).await;
                 }
             }
             app::Tabs::Missing => {
-                app.missing_state.select_previous();
+                if app.missing_state.selected().is_some() {
+                    app.missing_state.select_previous();
+                }
                 if app.properties_panel_open {
                     load_selected_track(app).await;
                 }
@@ -309,25 +395,33 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         // highlight next track
         match app.current_tab {
             app::Tabs::Library => {
-                app.library_state.select_next();
+                if app.library_state.selected().is_some() {
+                    app.library_state.select_next();
+                }
                 if app.properties_panel_open {
                     load_selected_track(app).await;
                 }
             }
             app::Tabs::Enrichment => {
-                app.pending_state.select_next();
+                if app.pending_state.selected().is_some() {
+                    app.pending_state.select_next();
+                }
                 if app.properties_panel_open {
                     load_selected_track(app).await;
                 }
             }
             app::Tabs::Duplicates => {
-                app.duplicate_state.select_next();
+                if app.duplicate_state.selected().is_some() {
+                    app.duplicate_state.select_next();
+                }
                 if app.properties_panel_open {
                     load_selected_track(app).await;
                 }
             }
             app::Tabs::Missing => {
-                app.missing_state.select_next();
+                if app.missing_state.selected().is_some() {
+                    app.missing_state.select_next();
+                }
                 if app.properties_panel_open {
                     load_selected_track(app).await;
                 }
@@ -554,11 +648,25 @@ fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_shortcuts_row(f: &mut Frame, area: Rect) {
     f.render_widget(
-        Paragraph::new("Shortcuts: | cycle [TAB]s | [SPACE]lect | [U]nvert selection | s[I]lect all | select n[O]ne | [D]elete | [ESC]ape | [P]roperties |"
+        Paragraph::new("Shortcuts: | cycle [TAB]s | [SPACE]lect | [U]nvert selection | s[I]lect all | select n[O]ne | [D]elete | [ESC]ape | [P]roperties | sea[/]rch"
         )
         .blue(),
         area
     );
+}
+
+fn draw_search_bar(f: &mut Frame, app: &mut App, area: Rect) {
+    let block = if app.search_mode {
+        Paragraph::new(format!("{}█", app.search_query.as_str()))
+            .block(Block::bordered())
+            .light_yellow()
+    } else {
+        Paragraph::new("press / to search")
+            .block(Block::bordered())
+            .gray()
+    };
+
+    f.render_widget(block, area);
 }
 
 fn draw_delete_prompt(f: &mut Frame, area: Rect) {
@@ -585,9 +693,13 @@ fn draw_delete_prompt(f: &mut Frame, area: Rect) {
     let text = Paragraph::new(vec![
         Line::raw(""),
         Line::raw(""),
-        Line::from(format!("Do you want to delete ALL selected tracks?")).light_red().centered(),
+        Line::from(format!("Do you want to delete ALL selected tracks?"))
+            .light_red()
+            .centered(),
         Line::raw(""),
-        Line::from(format!("[ESC] CANCEL /// [D] DELETE")).light_red().centered(),
+        Line::from(format!("[ESC] CANCEL /// [D] DELETE"))
+            .light_red()
+            .centered(),
     ])
     .alignment(ratatui::layout::Alignment::Center)
     .centered()

@@ -11,7 +11,6 @@ pub struct App {
     pub pending_scan_path: Option<std::path::PathBuf>,
     pub status_message: Option<String>,
 
-
     pub scan_progress: Option<(usize, usize)>, // (processed, total)
     pub scan_receiver: Option<tokio::sync::mpsc::Receiver<ScanEvent>>,
 
@@ -43,6 +42,11 @@ pub struct App {
     pub properties_panel_open: bool,
     pub properties_of_track: Option<TrackInfo>, // the whole track
 
+    // search bar
+    pub search_mode: bool,
+    pub search_query: String,
+
+    // screens and meta
     pub current_screen: Screens,
     pub current_tab: Tabs,
     pub should_quit: bool,
@@ -80,19 +84,24 @@ impl App {
             // this later will not happen on initial load and instead
             // will be populated ad hoc by the user's control
             // this will allow reloading these states while the app is running
-            library_tracks: db::load_tracks(&pool, None, None).await?,
-            pending_tracks: db::load_tracks(&pool, Some("pending"), None).await?,
-            duplicate_tracks: db::load_tracks(&pool, Some("duplicate"), None).await?,
-            missing_tracks: db::load_tracks(&pool, Some("missing"), None).await?,
+            library_tracks: db::load_tracks(&pool, None, None, None).await?,
+            pending_tracks: db::load_tracks(&pool, None, Some("pending"), None).await?,
+            duplicate_tracks: db::load_tracks(&pool, None, Some("duplicate"), None).await?,
+            missing_tracks: db::load_tracks(&pool, None, Some("missing"), None).await?,
 
             library_state: TableState::default(),
             pending_state: TableState::default(),
             duplicate_state: TableState::default(),
             missing_state: TableState::default(),
 
+            // properties panel
             properties_panel_open: false,
             properties_of_track: None,
 
+            search_mode: false,
+            search_query: String::new(),
+
+            // screens and meta
             current_screen: Screens::Start, // init with starting screen
             current_tab: Tabs::Library,
             should_quit: false,
@@ -101,14 +110,17 @@ impl App {
 
     pub async fn reload(app: &mut App) -> Result<(), sqlx::Error> {
         app.library_stats.total_tracks = db::count_tracks(&app.pool, None).await? as u32;
-        app.library_stats.total_pending = db::count_tracks(&app.pool, Some("pending")).await? as u32;
-        app.library_stats.total_duplicates = db::count_tracks(&app.pool, Some("duplicate")).await? as u32;
-        app.library_stats.total_missing = db::count_tracks(&app.pool, Some("missing")).await? as u32;
+        app.library_stats.total_pending =
+            db::count_tracks(&app.pool, Some("pending")).await? as u32;
+        app.library_stats.total_duplicates =
+            db::count_tracks(&app.pool, Some("duplicate")).await? as u32;
+        app.library_stats.total_missing =
+            db::count_tracks(&app.pool, Some("missing")).await? as u32;
 
-        app.library_tracks = db::load_tracks(&app.pool, None, None).await?;
-        app.pending_tracks = db::load_tracks(&app.pool, Some("pending"), None).await?;
-        app.duplicate_tracks = db::load_tracks(&app.pool, Some("duplicate"), None).await?;
-        app.missing_tracks = db::load_tracks(&app.pool, Some("missing"), None).await?;
+        app.library_tracks = db::load_tracks(&app.pool, None, None, None).await?;
+        app.pending_tracks = db::load_tracks(&app.pool, None, Some("pending"), None).await?;
+        app.duplicate_tracks = db::load_tracks(&app.pool, None, Some("duplicate"), None).await?;
+        app.missing_tracks = db::load_tracks(&app.pool, None, Some("missing"), None).await?;
 
         app.properties_panel_open = false;
         app.properties_of_track = None;
@@ -130,6 +142,17 @@ pub enum Tabs {
     Enrichment,
     Duplicates,
     Missing,
+}
+
+impl std::fmt::Display for Tabs {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Tabs::Library => write!(f, "library"),
+            Tabs::Enrichment => write!(f, "pending"),
+            Tabs::Duplicates => write!(f, "duplicates"),
+            Tabs::Missing => write!(f, "missing"),
+        }
+    }
 }
 
 pub enum Screens {
