@@ -22,21 +22,7 @@ pub struct App {
 
     pub library_stats: LibraryStats,
 
-    // vec of all tracks (summary)
-    pub library_tracks: Vec<TrackSummary>,
-    pub library_state: TableState,
-
-    // vec of tracks with pending state
-    pub pending_tracks: Vec<TrackSummary>,
-    pub pending_state: TableState,
-
-    // all duplicate tracks
-    pub duplicate_tracks: Vec<TrackSummary>,
-    pub duplicate_state: TableState,
-
-    // all orphaned tracks in th DB (missing on disk)
-    pub missing_tracks: Vec<TrackSummary>,
-    pub missing_state: TableState,
+    pub tabs: Vec<TabData>,
 
     // properties panel
     pub properties_panel_open: bool,
@@ -48,7 +34,7 @@ pub struct App {
 
     // screens and meta
     pub current_screen: Screens,
-    pub current_tab: Tabs,
+    pub current_tab: usize,
     pub should_quit: bool,
 }
 
@@ -81,16 +67,36 @@ impl App {
                 total_missing: db::count_tracks(&pool, Some("missing")).await? as u32,
             },
 
-            // pull stats from DB on startup
-            library_tracks: db::load_tracks(&pool, None, None, None).await?,
-            pending_tracks: db::load_tracks(&pool, None, Some("pending"), None).await?,
-            duplicate_tracks: db::load_tracks(&pool, None, Some("duplicate"), None).await?,
-            missing_tracks: db::load_tracks(&pool, None, Some("missing"), None).await?,
-
-            library_state: TableState::default(),
-            pending_state: TableState::default(),
-            duplicate_state: TableState::default(),
-            missing_state: TableState::default(),
+            tabs: vec![
+                // Library
+                TabData {
+                    label: "Library",
+                    status_filter: None,
+                    tracks: db::load_tracks(&pool, None, None, None).await?,
+                    state: TableState::default(),
+                },
+                // Enrichment
+                TabData {
+                    label: "Enrichment",
+                    status_filter: Some("pending"),
+                    tracks: db::load_tracks(&pool, None, Some("pending"), None).await?,
+                    state: TableState::default(),
+                },
+                // Duplicate
+                TabData {
+                    label: "Duplicates",
+                    status_filter: Some("duplicate"),
+                    tracks: db::load_tracks(&pool, None, Some("duplicate"), None).await?,
+                    state: TableState::default(),
+                },
+                // Missing
+                TabData {
+                    label: "Missing",
+                    status_filter: Some("missing"),
+                    tracks: db::load_tracks(&pool, None, Some("missing"), None).await?,
+                    state: TableState::default(),
+                },
+            ],
 
             // properties panel
             properties_panel_open: false,
@@ -101,30 +107,36 @@ impl App {
 
             // screens and meta
             current_screen: Screens::Start, // init with starting screen
-            current_tab: Tabs::Library,
+            current_tab: 0,
             should_quit: false,
         })
     }
 
-    pub async fn reload(app: &mut App) -> Result<(), sqlx::Error> {
-        app.library_stats.total_tracks = db::count_tracks(&app.pool, None).await? as u32;
-        app.library_stats.total_pending =
-            db::count_tracks(&app.pool, Some("pending")).await? as u32;
-        app.library_stats.total_duplicates =
-            db::count_tracks(&app.pool, Some("duplicate")).await? as u32;
-        app.library_stats.total_missing =
-            db::count_tracks(&app.pool, Some("missing")).await? as u32;
+    pub async fn reload(&mut self) -> Result<(), sqlx::Error> {
+        self.library_stats.total_tracks = db::count_tracks(&self.pool, None).await? as u32;
+        self.library_stats.total_pending =
+            db::count_tracks(&self.pool, Some("pending")).await? as u32;
+        self.library_stats.total_duplicates =
+            db::count_tracks(&self.pool, Some("duplicate")).await? as u32;
+        self.library_stats.total_missing =
+            db::count_tracks(&self.pool, Some("missing")).await? as u32;
 
-        app.library_tracks = db::load_tracks(&app.pool, None, None, None).await?;
-        app.pending_tracks = db::load_tracks(&app.pool, None, Some("pending"), None).await?;
-        app.duplicate_tracks = db::load_tracks(&app.pool, None, Some("duplicate"), None).await?;
-        app.missing_tracks = db::load_tracks(&app.pool, None, Some("missing"), None).await?;
+        for tab in &mut self.tabs {
+            tab.tracks = db::load_tracks(&self.pool, None, tab.status_filter, None).await?;
+        }
 
-        app.properties_panel_open = false;
-        app.properties_of_track = None;
+        self.properties_panel_open = false;
+        self.properties_of_track = None;
 
         Ok(())
     }
+}
+
+pub struct TabData {
+    pub label: &'static str,
+    pub status_filter: Option<&'static str>,
+    pub tracks: Vec<TrackSummary>,
+    pub state: TableState,
 }
 
 pub struct LibraryStats {
@@ -133,24 +145,6 @@ pub struct LibraryStats {
     pub total_pending: u32,
     pub total_duplicates: u32,
     pub total_missing: u32,
-}
-
-pub enum Tabs {
-    Library,
-    Enrichment,
-    Duplicates,
-    Missing,
-}
-
-impl std::fmt::Display for Tabs {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Tabs::Library => write!(f, "library"),
-            Tabs::Enrichment => write!(f, "pending"),
-            Tabs::Duplicates => write!(f, "duplicates"),
-            Tabs::Missing => write!(f, "missing"),
-        }
-    }
 }
 
 pub enum Screens {

@@ -39,15 +39,12 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error + Sen
     let mut term = Terminal::new(backend)?;
 
     // highlight the first element from each tab
-    if !app.library_tracks.is_empty() {
-        app.library_state.select(Some(0))
-    };
-    if !app.pending_tracks.is_empty() {
-        app.pending_state.select(Some(0))
-    };
-    if !app.duplicate_tracks.is_empty() {
-        app.duplicate_state.select(Some(0))
-    };
+
+    for tab in &mut app.tabs {
+        if !tab.tracks.is_empty() {
+            tab.state.select(Some(0));
+        }
+    }
 
     loop {
         term.draw(|f| ui::draw(f, &mut app))?;

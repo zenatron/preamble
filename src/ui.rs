@@ -54,7 +54,7 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
         sections[1],
     );
     f.render_widget(
-        Paragraph::new("v0.1.0")
+        Paragraph::new(concat!("v", env!("CARGO_PKG_VERSION")))
             .alignment(ratatui::layout::Alignment::Center)
             .blue(),
         sections[2],
@@ -275,50 +275,15 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
 }
 
 async fn handle_search_query(app: &mut App) {
-    match app.current_tab {
-        app::Tabs::Library => {
-            app.library_tracks = db::load_tracks(&app.pool, None, None, Some(&app.search_query))
-                .await
-                .unwrap_or_default();
-            if !app.library_tracks.is_empty() {
-                app.library_state.select(Some(0));
-            } else {
-                app.library_state.select(None);
-            }
-        }
-        app::Tabs::Enrichment => {
-            app.pending_tracks =
-                db::load_tracks(&app.pool, None, Some("pending"), Some(&app.search_query))
-                    .await
-                    .unwrap_or_default();
-            if !app.pending_tracks.is_empty() {
-                app.pending_state.select(Some(0));
-            } else {
-                app.pending_state.select(None);
-            }
-        }
-        app::Tabs::Duplicates => {
-            app.duplicate_tracks =
-                db::load_tracks(&app.pool, None, Some("duplicate"), Some(&app.search_query))
-                    .await
-                    .unwrap_or_default();
-            if !app.duplicate_tracks.is_empty() {
-                app.duplicate_state.select(Some(0));
-            } else {
-                app.duplicate_state.select(None);
-            }
-        }
-        app::Tabs::Missing => {
-            app.missing_tracks =
-                db::load_tracks(&app.pool, None, Some("missing"), Some(&app.search_query))
-                    .await
-                    .unwrap_or_default();
-            if !app.missing_tracks.is_empty() {
-                app.missing_state.select(Some(0));
-            } else {
-                app.missing_state.select(None);
-            }
-        }
+    let tab = &mut app.tabs[app.current_tab];
+
+    tab.tracks = db::load_tracks(&app.pool, None, tab.status_filter, Some(&app.search_query))
+        .await
+        .unwrap_or_default();
+    if !tab.tracks.is_empty() {
+        tab.state.select(Some(0));
+    } else {
+        tab.state.select(None);
     }
 }
 
@@ -354,231 +319,92 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         app.properties_panel_open = true;
         load_selected_track(app).await;
     }
+
     if key.code == KeyCode::Up {
         // highlight previous track
-        match app.current_tab {
-            app::Tabs::Library => {
-                if app.library_state.selected().is_some() {
-                    app.library_state.select_previous();
-                }
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Enrichment => {
-                if app.pending_state.selected().is_some() {
-                    app.pending_state.select_previous();
-                }
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Duplicates => {
-                if app.duplicate_state.selected().is_some() {
-                    app.duplicate_state.select_previous();
-                }
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Missing => {
-                if app.missing_state.selected().is_some() {
-                    app.missing_state.select_previous();
-                }
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
+        let active_tab_state = &mut app.tabs[app.current_tab].state;
+        if active_tab_state.selected().is_some() {
+            active_tab_state.select_previous();
+        }
+        if app.properties_panel_open {
+            load_selected_track(app).await;
         }
     }
+
     if key.code == KeyCode::Down {
         // highlight next track
-        match app.current_tab {
-            app::Tabs::Library => {
-                if app.library_state.selected().is_some() {
-                    app.library_state.select_next();
-                }
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Enrichment => {
-                if app.pending_state.selected().is_some() {
-                    app.pending_state.select_next();
-                }
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Duplicates => {
-                if app.duplicate_state.selected().is_some() {
-                    app.duplicate_state.select_next();
-                }
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Missing => {
-                if app.missing_state.selected().is_some() {
-                    app.missing_state.select_next();
-                }
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
+        let active_tab_state = &mut app.tabs[app.current_tab].state;
+        if active_tab_state.selected().is_some() {
+            active_tab_state.select_next();
+        }
+        if app.properties_panel_open {
+            load_selected_track(app).await;
         }
     }
+
+    // cycle app tabs
     if key.code == KeyCode::Tab {
         app.pending_delete = false;
-        // cycle app tabs
-        match app.current_tab {
-            app::Tabs::Library => {
-                app.current_tab = app::Tabs::Enrichment;
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Enrichment => {
-                app.current_tab = app::Tabs::Duplicates;
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Duplicates => {
-                app.current_tab = app::Tabs::Missing;
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
-            app::Tabs::Missing => {
-                app.current_tab = app::Tabs::Library;
-                if app.properties_panel_open {
-                    load_selected_track(app).await;
-                }
-            }
+
+        // is saturating_add completely unnecessary here? YES!
+        // is it cool to include? ABSOLUTELY!
+        app.current_tab = (usize::saturating_add(app.current_tab, 1)) % app.tabs.len();
+        if app.properties_panel_open {
+            load_selected_track(app).await;
         }
     }
 
     // handle toggle track row selection
     if key.code == KeyCode::Char(' ') {
-        match app.current_tab {
-            app::Tabs::Library => {
-                if let Some(idx) = app.library_state.selected() {
-                    app.library_tracks[idx].is_selected = !app.library_tracks[idx].is_selected;
-                }
-            }
-            app::Tabs::Enrichment => {
-                if let Some(idx) = app.pending_state.selected() {
-                    app.pending_tracks[idx].is_selected = !app.pending_tracks[idx].is_selected;
-                }
-            }
-            app::Tabs::Duplicates => {
-                if let Some(idx) = app.duplicate_state.selected() {
-                    app.duplicate_tracks[idx].is_selected = !app.duplicate_tracks[idx].is_selected;
-                }
-            }
-            app::Tabs::Missing => {
-                if let Some(idx) = app.missing_state.selected() {
-                    app.missing_tracks[idx].is_selected = !app.missing_tracks[idx].is_selected;
-                }
-            }
+        let active_tab_data = &mut app.tabs[app.current_tab];
+
+        if let Some(idx) = active_tab_data.state.selected() {
+            active_tab_data.tracks[idx].is_selected = !active_tab_data.tracks[idx].is_selected;
         }
     }
 
     // handle SELECT ALL
     if key.code == KeyCode::Char('i') {
-        match app.current_tab {
-            app::Tabs::Library => app
-                .library_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = true),
-            app::Tabs::Enrichment => app
-                .pending_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = true),
-            app::Tabs::Duplicates => app
-                .duplicate_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = true),
-            app::Tabs::Missing => app
-                .missing_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = true),
-        }
+        app.tabs[app.current_tab]
+            .tracks
+            .iter_mut()
+            .for_each(|t| t.is_selected = true);
     }
 
     // handle DESELECT ALL
     if key.code == KeyCode::Char('o') {
-        match app.current_tab {
-            app::Tabs::Library => app
-                .library_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = false),
-            app::Tabs::Enrichment => app
-                .pending_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = false),
-            app::Tabs::Duplicates => app
-                .duplicate_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = false),
-            app::Tabs::Missing => app
-                .missing_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = false),
-        }
+        app.tabs[app.current_tab]
+            .tracks
+            .iter_mut()
+            .for_each(|t| t.is_selected = false);
     }
 
     // handle INVERT SELECTION
     if key.code == KeyCode::Char('u') {
-        match app.current_tab {
-            app::Tabs::Library => app
-                .library_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = !f.is_selected),
-            app::Tabs::Enrichment => app
-                .pending_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = !f.is_selected),
-            app::Tabs::Duplicates => app
-                .duplicate_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = !f.is_selected),
-            app::Tabs::Missing => app
-                .missing_tracks
-                .iter_mut()
-                .for_each(|f| f.is_selected = !f.is_selected),
-        }
+        app.tabs[app.current_tab]
+            .tracks
+            .iter_mut()
+            .for_each(|t| t.is_selected = !t.is_selected);
     }
 
     // handle DELETE tracks
     if key.code == KeyCode::Char('d') {
         if app.pending_delete {
-            match app.current_tab {
-                app::Tabs::Library => {}
-                app::Tabs::Enrichment => {}
-                app::Tabs::Duplicates => {
-                    for track in &app.duplicate_tracks {
-                        if track.is_selected {
-                            if let Some(id) = track.id {
-                                std::fs::remove_file(track.file_path.clone()).ok();
-                                db::delete_single_track(&app.pool, id).await.ok();
-                            }
-                        }
-                    }
-                }
-                app::Tabs::Missing => {
-                    for track in &app.missing_tracks {
-                        if track.is_selected {
-                            if let Some(id) = track.id {
-                                std::fs::remove_file(track.file_path.clone()).ok();
-                                db::delete_single_track(&app.pool, id).await.ok();
-                            }
-                        }
+            let active_tab_data = &app.tabs[app.current_tab];
+
+            if matches!(active_tab_data.label, "Duplicates" | "Missing") {
+                return;
+            }
+
+            for track in &active_tab_data.tracks {
+                if track.is_selected {
+                    if let Some(id) = track.id {
+                        std::fs::remove_file(track.file_path.clone()).ok();
+                        db::delete_single_track(&app.pool, id).await.ok();
                     }
                 }
             }
-            App::reload(app).await.ok();
+            app.reload().await.ok();
             app.pending_delete = false;
         } else {
             app.pending_delete = true;
@@ -602,29 +428,15 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
 }
 
 async fn load_selected_track(app: &mut App) {
-    let mut selected_track_db_id = 0;
-    match app.current_tab {
-        app::Tabs::Library => {
-            if let Some(idx) = app.library_state.selected() {
-                selected_track_db_id = app.library_tracks.get(idx).and_then(|t| t.id).unwrap_or(0);
-            }
-        }
-        app::Tabs::Enrichment => {
-            if let Some(idx) = app.pending_state.selected() {
-                selected_track_db_id = app.pending_tracks.get(idx).and_then(|t| t.id).unwrap_or(0);
-            }
-        }
-        app::Tabs::Duplicates => {
-            if let Some(idx) = app.duplicate_state.selected() {
-                selected_track_db_id = app.duplicate_tracks.get(idx).and_then(|t| t.id).unwrap_or(0);
-            }
-        }
-        app::Tabs::Missing => {
-            if let Some(idx) = app.missing_state.selected() {
-                selected_track_db_id = app.missing_tracks.get(idx).and_then(|t| t.id).unwrap_or(0);
-            }
-        }
-    }
+    let active_tab_data = &app.tabs[app.current_tab];
+
+    let selected_track_db_id = active_tab_data
+        .state
+        .selected()
+        .and_then(|idx| active_tab_data.tracks.get(idx))
+        .and_then(|t| t.id)
+        .unwrap_or_default();
+
     app.properties_of_track = load_track_full(&app.pool, selected_track_db_id)
         .await
         .ok()
@@ -632,17 +444,11 @@ async fn load_selected_track(app: &mut App) {
 }
 
 fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
-    let tab_bar =
-        ratatui::widgets::Tabs::new(vec!["Library", "Enrichment", "Duplicates", "Missing"])
-            .select(match app.current_tab {
-                app::Tabs::Library => 0,
-                app::Tabs::Enrichment => 1,
-                app::Tabs::Duplicates => 2,
-                app::Tabs::Missing => 3,
-            })
-            .block(Block::default().borders(Borders::ALL).light_green())
-            .highlight_style(Style::default().bold().light_green().reversed());
-
+    let titles: Vec<&str> = app.tabs.iter().map(|t| t.label).collect();
+    let tab_bar = ratatui::widgets::Tabs::new(titles)
+        .select(app.current_tab)
+        .block(Block::default().borders(Borders::ALL).light_green())
+        .highlight_style(Style::default().bold().light_green().reversed());
     f.render_widget(tab_bar, area);
 }
 
@@ -708,327 +514,93 @@ fn draw_delete_prompt(f: &mut Frame, area: Rect) {
 }
 
 fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
-    match app.current_tab {
-        app::Tabs::Library => {
-            if app.library_tracks.len() == 0 {
-                f.render_widget(Paragraph::new("No Library Tracks Found"), area);
-                return;
-            }
+    let active_tab_data = &mut app.tabs[app.current_tab];
 
-            let library_items = app.library_tracks.iter().map(|i| {
-                let row = Row::new(vec![
-                    Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
-                    Cell::new(i.title.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.album.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.file_format.as_deref().unwrap_or("Unknown")),
-                    Cell::new(
-                        i.file_size
-                            .map(|v| format_size(v as u64, DECIMAL))
-                            .unwrap_or("-".to_string()),
-                    ),
-                    Cell::new(format_track_duration(i.duration).unwrap_or("-".to_string())),
-                    Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
-                    Cell::new(i.status.as_str()),
-                    // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
-                ]);
-                if i.is_selected {
-                    row.style(Style::default().light_green())
-                } else {
-                    row
-                }
-            });
-
-            let list = Table::new(
-                library_items,
-                [
-                    Constraint::Min(3),         // is selected?
-                    Constraint::Percentage(25), // title
-                    Constraint::Percentage(15), // artist
-                    Constraint::Percentage(20), // album
-                    Constraint::Percentage(10), // file format
-                    Constraint::Percentage(10), // file size
-                    Constraint::Percentage(5),  // duration
-                    Constraint::Percentage(5),  // bitrate
-                    Constraint::Percentage(10), // status
-                                                // Constraint::Percentage(10), // file hash
-                ],
-            )
-            .block(
-                Block::default()
-                    .title(
-                        format!(
-                            "Library: [{}/{}] - Selected: [{}/{}]",
-                            app.library_state.selected().unwrap_or(0) + 1,
-                            app.library_tracks.len(),
-                            app.library_tracks.iter().filter(|f| f.is_selected).count(),
-                            app.library_tracks.len(),
-                        )
-                        .light_magenta(),
-                    )
-                    .borders(Borders::ALL),
-            )
-            .row_highlight_style(Style::default().reversed())
-            .header(
-                Row::new(vec![
-                    Cell::new("   "),
-                    Cell::new("Title"),
-                    Cell::new("Artist"),
-                    Cell::new("Album"),
-                    Cell::new("Format"),
-                    Cell::new("Size"),
-                    Cell::new("Duration"),
-                    Cell::new("Bitrate"),
-                    Cell::new("Status"),
-                    // Cell::new("File Hash"),
-                ])
-                .bold()
-                .bottom_margin(1),
-            );
-
-            f.render_stateful_widget(list, area, &mut app.library_state);
-        }
-        app::Tabs::Enrichment => {
-            if app.pending_tracks.len() == 0 {
-                f.render_widget(Paragraph::new("No Tracks Needing Enrichment Found"), area);
-                return;
-            }
-
-            let enrichment_items = app.pending_tracks.iter().map(|i| {
-                let row = Row::new(vec![
-                    Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
-                    Cell::new(i.title.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.album.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.file_format.as_deref().unwrap_or("Unknown")),
-                    Cell::new(
-                        i.file_size
-                            .map(|v| format_size(v as u64, DECIMAL))
-                            .unwrap_or("-".to_string()),
-                    ),
-                    Cell::new(format_track_duration(i.duration).unwrap_or("-".to_string())),
-                    Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
-                    Cell::new(i.status.as_str()),
-                    // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
-                ]);
-                if i.is_selected {
-                    row.style(Style::default().light_green())
-                } else {
-                    row
-                }
-            });
-
-            let list = Table::new(
-                enrichment_items,
-                [
-                    Constraint::Min(3),         // is selected?
-                    Constraint::Percentage(25), // title
-                    Constraint::Percentage(15), // artist
-                    Constraint::Percentage(20), // album
-                    Constraint::Percentage(10), // file format
-                    Constraint::Percentage(10), // file size
-                    Constraint::Percentage(5),  // duration
-                    Constraint::Percentage(5),  // bitrate
-                    Constraint::Percentage(10), // status
-                                                // Constraint::Percentage(10), // file hash
-                ],
-            )
-            .block(
-                Block::default()
-                    .title(
-                        format!(
-                            "Need Enrichment: [{}/{}] - Selected: [{}/{}]",
-                            app.pending_state.selected().unwrap_or(0) + 1,
-                            app.pending_tracks.len(),
-                            app.pending_tracks.iter().filter(|f| f.is_selected).count(),
-                            app.pending_tracks.len(),
-                        )
-                        .light_magenta(),
-                    )
-                    .borders(Borders::ALL),
-            )
-            .row_highlight_style(Style::default().reversed())
-            .header(
-                Row::new(vec![
-                    Cell::new("   "),
-                    Cell::new("Title"),
-                    Cell::new("Artist"),
-                    Cell::new("Album"),
-                    Cell::new("Format"),
-                    Cell::new("Size"),
-                    Cell::new("Duration"),
-                    Cell::new("Bitrate"),
-                    Cell::new("Status"),
-                    // Cell::new("File Hash"),
-                ])
-                .bold()
-                .bottom_margin(1),
-            );
-
-            f.render_stateful_widget(list, area, &mut app.pending_state);
-        }
-        app::Tabs::Duplicates => {
-            if app.duplicate_tracks.len() == 0 {
-                f.render_widget(Paragraph::new("No Duplicate Tracks Found"), area);
-                return;
-            }
-
-            let duplicate_items = app.duplicate_tracks.iter().map(|i| {
-                let row = Row::new(vec![
-                    Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
-                    Cell::new(i.title.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.album.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.file_format.as_deref().unwrap_or("Unknown")),
-                    Cell::new(
-                        i.file_size
-                            .map(|v| format_size(v as u64, DECIMAL))
-                            .unwrap_or("-".to_string()),
-                    ),
-                    Cell::new(format_track_duration(i.duration).unwrap_or("-".to_string())),
-                    Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
-                    Cell::new(i.status.as_str()),
-                    // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
-                ]);
-                if i.is_selected {
-                    row.style(Style::default().light_green())
-                } else {
-                    row
-                }
-            });
-
-            let list = Table::new(
-                duplicate_items,
-                [
-                    Constraint::Min(3),         // is selected?
-                    Constraint::Percentage(25), // title
-                    Constraint::Percentage(15), // artist
-                    Constraint::Percentage(20), // album
-                    Constraint::Percentage(10), // file format
-                    Constraint::Percentage(10), // file size
-                    Constraint::Percentage(5),  // duration
-                    Constraint::Percentage(5),  // bitrate
-                    Constraint::Percentage(10), // status
-                                                // Constraint::Percentage(10), // file hash
-                ],
-            )
-            .block(
-                Block::default()
-                    .title(
-                        format!(
-                            "Duplicates: [{}/{}] - Selected: [{}/{}]",
-                            app.duplicate_state.selected().unwrap_or(0) + 1,
-                            app.duplicate_tracks.len(),
-                            app.duplicate_tracks
-                                .iter()
-                                .filter(|f| f.is_selected)
-                                .count(),
-                            app.duplicate_tracks.len(),
-                        )
-                        .light_magenta(),
-                    )
-                    .borders(Borders::ALL),
-            )
-            .row_highlight_style(Style::default().reversed())
-            .header(
-                Row::new(vec![
-                    Cell::new("   "),
-                    Cell::new("Title"),
-                    Cell::new("Artist"),
-                    Cell::new("Album"),
-                    Cell::new("Format"),
-                    Cell::new("Size"),
-                    Cell::new("Duration"),
-                    Cell::new("Bitrate"),
-                    Cell::new("Status"),
-                    // Cell::new("File Hash"),
-                ])
-                .bold()
-                .bottom_margin(1),
-            );
-
-            f.render_stateful_widget(list, area, &mut app.duplicate_state);
-        }
-        app::Tabs::Missing => {
-            if app.missing_tracks.len() == 0 {
-                f.render_widget(Paragraph::new("No Missing Tracks Found"), area);
-                return;
-            }
-
-            let missing_items = app.missing_tracks.iter().map(|i| {
-                let row = Row::new(vec![
-                    Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
-                    Cell::new(i.title.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.album.as_deref().unwrap_or("Unknown")),
-                    Cell::new(i.file_format.as_deref().unwrap_or("Unknown")),
-                    Cell::new(
-                        i.file_size
-                            .map(|v| format_size(v as u64, DECIMAL))
-                            .unwrap_or("-".to_string()),
-                    ),
-                    Cell::new(format_track_duration(i.duration).unwrap_or("-".to_string())),
-                    Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
-                    Cell::new(i.status.as_str()),
-                    // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
-                ]);
-                if i.is_selected {
-                    row.style(Style::default().light_green())
-                } else {
-                    row
-                }
-            });
-
-            let list = Table::new(
-                missing_items,
-                [
-                    Constraint::Min(3),         // is selected?
-                    Constraint::Percentage(25), // title
-                    Constraint::Percentage(15), // artist
-                    Constraint::Percentage(20), // album
-                    Constraint::Percentage(10), // file format
-                    Constraint::Percentage(10), // file size
-                    Constraint::Percentage(5),  // duration
-                    Constraint::Percentage(5),  // bitrate
-                    Constraint::Percentage(10), // status
-                                                // Constraint::Percentage(10), // file hash
-                ],
-            )
-            .block(
-                Block::default()
-                    .title(
-                        format!(
-                            "Missing: [{}/{}] - Selected: [{}/{}]",
-                            app.missing_state.selected().unwrap_or(0) + 1,
-                            app.missing_tracks.len(),
-                            app.missing_tracks.iter().filter(|f| f.is_selected).count(),
-                            app.missing_tracks.len(),
-                        )
-                        .light_magenta(),
-                    )
-                    .borders(Borders::ALL),
-            )
-            .row_highlight_style(Style::default().reversed())
-            .header(
-                Row::new(vec![
-                    Cell::new("   "),
-                    Cell::new("Title"),
-                    Cell::new("Artist"),
-                    Cell::new("Album"),
-                    Cell::new("Format"),
-                    Cell::new("Size"),
-                    Cell::new("Duration"),
-                    Cell::new("Bitrate"),
-                    Cell::new("Status"),
-                    // Cell::new("File Hash"),
-                ])
-                .bold()
-                .bottom_margin(1),
-            );
-
-            f.render_stateful_widget(list, area, &mut app.missing_state);
-        }
+    if active_tab_data.tracks.len() == 0 {
+        f.render_widget(
+            Paragraph::new(format!("No {} Tracks Found", active_tab_data.label)),
+            area,
+        );
+        return;
     }
+
+    let items = active_tab_data.tracks.iter().map(|i| {
+        let row = Row::new(vec![
+            Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
+            Cell::new(i.title.as_deref().unwrap_or("Unknown")),
+            Cell::new(i.artist.as_deref().unwrap_or("Unknown")),
+            Cell::new(i.album.as_deref().unwrap_or("Unknown")),
+            Cell::new(i.file_format.as_deref().unwrap_or("Unknown")),
+            Cell::new(
+                i.file_size
+                    .map(|v| format_size(v as u64, DECIMAL))
+                    .unwrap_or("-".to_string()),
+            ),
+            Cell::new(format_track_duration(i.duration).unwrap_or("-".to_string())),
+            Cell::new(i.bitrate.map(|v| v.to_string()).unwrap_or("-".to_string())),
+            Cell::new(i.status.as_str()),
+            // Cell::new(i.file_hash.as_deref().unwrap_or("Unknown")),
+        ]);
+        if i.is_selected {
+            row.style(Style::default().light_green())
+        } else {
+            row
+        }
+    });
+
+    let list = Table::new(
+        items,
+        [
+            Constraint::Min(3),         // is selected?
+            Constraint::Percentage(25), // title
+            Constraint::Percentage(15), // artist
+            Constraint::Percentage(20), // album
+            Constraint::Percentage(10), // file format
+            Constraint::Percentage(10), // file size
+            Constraint::Percentage(5),  // duration
+            Constraint::Percentage(5),  // bitrate
+            Constraint::Percentage(10), // status
+                                        // Constraint::Percentage(10), // file hash
+        ],
+    )
+    .block(
+        Block::default()
+            .title(
+                format!(
+                    "{}: [{}/{}] - Selected: [{}/{}]",
+                    active_tab_data.label,
+                    active_tab_data.state.selected().unwrap_or(0) + 1,
+                    active_tab_data.tracks.len(),
+                    active_tab_data
+                        .tracks
+                        .iter()
+                        .filter(|f| f.is_selected)
+                        .count(),
+                    active_tab_data.tracks.len(),
+                )
+                .light_magenta(),
+            )
+            .borders(Borders::ALL),
+    )
+    .row_highlight_style(Style::default().reversed())
+    .header(
+        Row::new(vec![
+            Cell::new("   "),
+            Cell::new("Title"),
+            Cell::new("Artist"),
+            Cell::new("Album"),
+            Cell::new("Format"),
+            Cell::new("Size"),
+            Cell::new("Duration"),
+            Cell::new("Bitrate"),
+            Cell::new("Status"),
+            // Cell::new("File Hash"),
+        ])
+        .bold()
+        .bottom_margin(1),
+    );
+
+    f.render_stateful_widget(list, area, &mut active_tab_data.state);
 }
 
 fn draw_properties_panel(f: &mut Frame, app: &mut App, area: Rect) {
