@@ -606,22 +606,22 @@ async fn load_selected_track(app: &mut App) {
     match app.current_tab {
         app::Tabs::Library => {
             if let Some(idx) = app.library_state.selected() {
-                selected_track_db_id = app.library_tracks[idx].id.unwrap_or(0);
+                selected_track_db_id = app.library_tracks.get(idx).and_then(|t| t.id).unwrap_or(0);
             }
         }
         app::Tabs::Enrichment => {
             if let Some(idx) = app.pending_state.selected() {
-                selected_track_db_id = app.pending_tracks[idx].id.unwrap_or(0);
+                selected_track_db_id = app.pending_tracks.get(idx).and_then(|t| t.id).unwrap_or(0);
             }
         }
         app::Tabs::Duplicates => {
             if let Some(idx) = app.duplicate_state.selected() {
-                selected_track_db_id = app.duplicate_tracks[idx].id.unwrap_or(0);
+                selected_track_db_id = app.duplicate_tracks.get(idx).and_then(|t| t.id).unwrap_or(0);
             }
         }
         app::Tabs::Missing => {
             if let Some(idx) = app.missing_state.selected() {
-                selected_track_db_id = app.missing_tracks[idx].id.unwrap_or(0);
+                selected_track_db_id = app.missing_tracks.get(idx).and_then(|t| t.id).unwrap_or(0);
             }
         }
     }

@@ -57,7 +57,6 @@ impl App {
         pool: SqlitePool,
         pending_scan_path: Option<std::path::PathBuf>,
     ) -> Result<Self, sqlx::Error> {
-        // Should a new app always be initialized with existing paths?
         // The user can manually refetch the tracks on hand
         Ok(Self {
             pool: pool.clone(),
@@ -74,6 +73,7 @@ impl App {
 
             pending_delete: false,
 
+            // pull stats from DB on startup
             library_stats: LibraryStats {
                 total_tracks: db::count_tracks(&pool, None).await? as u32,
                 total_pending: db::count_tracks(&pool, Some("pending")).await? as u32,
@@ -81,9 +81,7 @@ impl App {
                 total_missing: db::count_tracks(&pool, Some("missing")).await? as u32,
             },
 
-            // this later will not happen on initial load and instead
-            // will be populated ad hoc by the user's control
-            // this will allow reloading these states while the app is running
+            // pull stats from DB on startup
             library_tracks: db::load_tracks(&pool, None, None, None).await?,
             pending_tracks: db::load_tracks(&pool, None, Some("pending"), None).await?,
             duplicate_tracks: db::load_tracks(&pool, None, Some("duplicate"), None).await?,
