@@ -285,6 +285,7 @@ async fn handle_search_query(app: &mut App) {
     } else {
         tab.state.select(None);
     }
+    load_selected_track(app).await;
 }
 
 async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
@@ -301,7 +302,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
             if key.code == KeyCode::Esc {
                 app.search_mode = false;
                 app.search_query = String::new();
-                App::reload(app).await.ok();
+                app.reload().await.ok();
             }
             if key.code == KeyCode::Enter {
                 app.search_mode = false;
@@ -518,7 +519,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
 
     if active_tab_data.tracks.len() == 0 {
         f.render_widget(
-            Paragraph::new(format!("No {} Tracks Found", active_tab_data.label)),
+            Paragraph::new(format!("No {} Tracks Found", active_tab_data.label)).light_magenta(),
             area,
         );
         return;

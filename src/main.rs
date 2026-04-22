@@ -55,7 +55,7 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error + Sen
             match rx.try_recv() {
                 Ok(ScanEvent::Progress(n, total)) => app.scan_progress = Some((n, total)),
                 Ok(ScanEvent::Done) => {
-                    App::reload(&mut app).await?;
+                    app.reload().await?;
                     app.scan_receiver = None;
                     app.scan_progress = None;
                     app.current_screen = app::Screens::Start;
@@ -66,7 +66,7 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error + Sen
 
         if let Some(ref mut rx) = app.validating_receiver {
             if let Ok(_) = rx.try_recv() {
-                App::reload(&mut app).await?;
+                app.reload().await?;
                 app.validating_receiver = None;
                 app.is_validating = false;
             }
