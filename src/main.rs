@@ -74,7 +74,7 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error + Sen
 
         ui::poll_events(&mut app).await?;
 
-        if app.should_quit {
+        if app.quit_confirmed {
             break;
         }
     }

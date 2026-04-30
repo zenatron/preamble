@@ -100,7 +100,7 @@ Full tag metadata including title, artist, album, album artist, composer, label,
 
 ### TUI
 - [x] Track detail view on selection
-- [ ] SEARCH MODE!!!!
+- [x] SEARCH MODE!!!!
 - [ ] Manual tag editing
 - [ ] Watch mode — monitor directory for new files
 - [ ] Structured logging with `tracing`

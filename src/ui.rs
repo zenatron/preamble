@@ -25,6 +25,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_scanning_screen(f, app, area);
         }
     }
+
+    if app.should_quit {
+        draw_confirmation_prompt(
+            f,
+            area,
+            "QUIT",
+            "Do you want to quit the app?",
+            "[ESC] CANCEL /// [Q] QUIT",
+        );
+    }
 }
 
 fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
@@ -173,7 +183,14 @@ fn draw_main_screen(f: &mut Frame, app: &mut App, area: Rect) {
     draw_table_content(f, app, sections[3]);
 
     if app.pending_delete {
-        draw_delete_prompt(f, area);
+        // draw_delete_prompt(f, area);
+        draw_confirmation_prompt(
+            f,
+            area,
+            "DELETE TRACKS",
+            "Delete all selected tracks?",
+            "[ESC] CANCEL /// [D] DELETE",
+        );
     }
 }
 
@@ -217,10 +234,6 @@ pub async fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error 
     if crossterm::event::poll(std::time::Duration::from_millis(1000 / 15))? {
         match crossterm::event::read()? {
             Event::Key(key) => {
-                if key.code == KeyCode::Char('q') && !app.search_mode {
-                    app.should_quit = true;
-                }
-
                 match app.current_screen {
                     app::Screens::Start => {
                         handle_start_navigation(app, key).await;
@@ -239,6 +252,16 @@ pub async fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error 
 }
 
 async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Char('q') && !app.search_mode {
+        if app.should_quit {
+            app.quit_confirmed = true;
+        }
+        app.should_quit = true;
+    }
+    if key.code == KeyCode::Esc && app.should_quit {
+        app.should_quit = false;
+    }
+
     if key.code == KeyCode::Char('s') {
         if let Some(ref path) = app.pending_scan_path {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -292,6 +315,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
     // handle searching
     if key.code == KeyCode::Char('/') {
         app.search_mode = true;
+        return;
     }
     {
         if app.search_mode {
@@ -393,7 +417,9 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         if app.pending_delete {
             let active_tab_data = &app.tabs[app.current_tab];
 
-            if matches!(active_tab_data.label, "Duplicates" | "Missing") {
+            // We do not want to allow delete on these two tabs
+            if matches!(active_tab_data.label, "Library" | "Enrichment") {
+                app.pending_delete = false;
                 return;
             }
 
@@ -412,8 +438,19 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         }
     }
 
+    if key.code == KeyCode::Char('q') && !app.search_mode {
+        if app.should_quit {
+            app.quit_confirmed = true;
+        }
+        app.should_quit = true;
+        return;
+    }
     // DO NOT PUT ANY HANDLERS BELOW THIS ONE
     if key.code == KeyCode::Esc {
+        if app.should_quit {
+            app.should_quit = false;
+            return;
+        }
         if app.pending_delete {
             app.pending_delete = false;
             return;
@@ -468,50 +505,12 @@ fn draw_search_bar(f: &mut Frame, app: &mut App, area: Rect) {
             .block(Block::bordered())
             .light_yellow()
     } else {
-        Paragraph::new("press / to search")
+        Paragraph::new("press [/] to search, [enter] to query, [esc] to clear")
             .block(Block::bordered())
             .gray()
     };
 
     f.render_widget(block, area);
-}
-
-fn draw_delete_prompt(f: &mut Frame, area: Rect) {
-    let outer = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(9), // pane height
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    let inner = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(48), // pane width
-        Constraint::Fill(1),
-    ])
-    .split(outer[1]);
-
-    f.render_widget(ratatui::widgets::Clear, inner[1]);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("DELETE?")
-        .red();
-    let text = Paragraph::new(vec![
-        Line::raw(""),
-        Line::raw(""),
-        Line::from(format!("Do you want to delete ALL selected tracks?"))
-            .light_red()
-            .centered(),
-        Line::raw(""),
-        Line::from(format!("[ESC] CANCEL /// [D] DELETE"))
-            .light_red()
-            .centered(),
-    ])
-    .alignment(ratatui::layout::Alignment::Center)
-    .centered()
-    .block(block);
-    f.render_widget(text, inner[1]);
 }
 
 fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
@@ -844,4 +843,41 @@ fn draw_properties_panel(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(block, area);
         f.render_widget(Paragraph::new(lines), inner);
     }
+}
+
+fn draw_confirmation_prompt(
+    f: &mut Frame,
+    area: Rect,
+    title: &'static str,
+    message: &'static str,
+    command_text: &'static str,
+) {
+    let outer = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(9), // pane height
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let inner = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(48), // pane width
+        Constraint::Fill(1),
+    ])
+    .split(outer[1]);
+
+    f.render_widget(ratatui::widgets::Clear, inner[1]);
+
+    let block = Block::default().borders(Borders::ALL).title(title).red();
+    let text = Paragraph::new(vec![
+        Line::raw(""),
+        Line::raw(""),
+        Line::from(message).light_red().centered(),
+        Line::raw(""),
+        Line::from(command_text).light_red().centered(),
+    ])
+    .alignment(ratatui::layout::Alignment::Center)
+    .centered()
+    .block(block);
+    f.render_widget(text, inner[1]);
 }

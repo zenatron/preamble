@@ -36,6 +36,7 @@ pub struct App {
     pub current_screen: Screens,
     pub current_tab: usize,
     pub should_quit: bool,
+    pub quit_confirmed: bool,
 }
 
 impl App {
@@ -109,6 +110,7 @@ impl App {
             current_screen: Screens::Start, // init with starting screen
             current_tab: 0,
             should_quit: false,
+            quit_confirmed: false,
         })
     }
 

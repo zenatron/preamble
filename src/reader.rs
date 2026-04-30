@@ -68,7 +68,7 @@ pub async fn scan_library(
         let mut processed = 0usize;
         let mut tasks = FuturesUnordered::new();
 
-        eprintln!("BEFORE SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
+        // eprintln!("BEFORE SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
         for p in new_track_paths {
             let sem = Arc::clone(&semaphore);
             tasks.push(async move {
@@ -111,7 +111,7 @@ pub async fn scan_library(
         }
         
         tx.commit().await?;
-        eprintln!("AFTER SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
+        // eprintln!("AFTER SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
     }
     scan_sender.send(ScanEvent::Done).await.ok();
     Ok(())
