@@ -1,0 +1,14 @@
+[tasks.build-linux]
+env = { CC_x86_64_unknown_linux_musl = "x86_64-linux-musl-gcc", CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "x86_64-linux-musl-gcc" }
+command = "cargo"
+args = ["build", "--release", "--target", "x86_64-unknown-linux-musl"]
+
+[tasks.release-linux]
+description = "Build and rename Linux release binary with version"
+dependencies = ["build-linux"]
+script = [
+    '''
+    version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+    mv target/x86_64-unknown-linux-musl/release/preamble target/x86_64-unknown-linux-musl/release/preamble-$version-linux
+    '''
+]
