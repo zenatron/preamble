@@ -82,7 +82,8 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + S
     let get = |key: ItemKey| -> Option<String> {
         tag.and_then(|t| t.get(&key))
             .and_then(|i| i.value().text())
-            .map(|s| s.to_string())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     };
 
     Ok(TrackInfo {

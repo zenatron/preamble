@@ -21,7 +21,7 @@ pub async fn load_existing_paths(pool: &SqlitePool) -> Result<HashSet<String>, s
 // gets all existing isrcs in the form of a HashSet
 // this is a very solid layer of deduplication, if isrc is present for each track
 pub async fn load_existing_isrcs(pool: &SqlitePool) -> Result<HashSet<String>, sqlx::Error> {
-    let rows = sqlx::query_scalar!("SELECT isrc FROM tracks WHERE isrc IS NOT NULL")
+    let rows = sqlx::query_scalar!("SELECT isrc FROM tracks WHERE isrc IS NOT NULL AND isrc != ''")
         .fetch_all(pool)
         .await?;
     Ok(rows.into_iter().flatten().collect())
