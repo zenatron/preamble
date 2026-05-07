@@ -1,7 +1,7 @@
 use crate::db;
 
 use crate::reader::{ScanEvent, ValidateEvent};
-use crate::track::{TrackInfo, TrackSummary};
+use crate::track::{DuplicateGroupSummary, TrackInfo, TrackSummary};
 use ratatui::widgets::TableState;
 use sqlx::SqlitePool;
 
@@ -24,6 +24,8 @@ pub struct App {
 
     pub tabs: Vec<TabData>,
 
+    pub duplicates: DuplicatesView,
+
     // properties panel
     pub properties_panel_open: bool,
     pub properties_of_track: Option<TrackInfo>, // the whole track
@@ -44,7 +46,11 @@ impl App {
         pool: SqlitePool,
         pending_scan_path: Option<std::path::PathBuf>,
     ) -> Result<Self, sqlx::Error> {
+        
         // The user can manually refetch the tracks on hand
+
+        let duplicates = DuplicatesView::new(&pool).await?;
+
         Ok(Self {
             pool: pool.clone(),
 
@@ -64,7 +70,7 @@ impl App {
             library_stats: LibraryStats {
                 total_tracks: db::count_tracks(&pool, None).await? as u32,
                 total_pending: db::count_tracks(&pool, Some("pending")).await? as u32,
-                total_duplicates: db::count_tracks(&pool, Some("duplicate")).await? as u32,
+                total_duplicates: duplicates.groups.len() as u32,
                 total_missing: db::count_tracks(&pool, Some("missing")).await? as u32,
             },
 
@@ -83,7 +89,7 @@ impl App {
                     tracks: db::load_tracks(&pool, None, Some("pending"), None).await?,
                     state: TableState::default(),
                 },
-                // Duplicate
+                // Duplicate // TODO: Remove later
                 TabData {
                     label: "Duplicates",
                     status_filter: Some("duplicate"),
@@ -98,6 +104,8 @@ impl App {
                     state: TableState::default(),
                 },
             ],
+
+            duplicates,
 
             // properties panel
             properties_panel_open: false,
@@ -115,11 +123,11 @@ impl App {
     }
 
     pub async fn reload(&mut self) -> Result<(), sqlx::Error> {
+        self.duplicates.reload(&self.pool).await?;
         self.library_stats.total_tracks = db::count_tracks(&self.pool, None).await? as u32;
         self.library_stats.total_pending =
             db::count_tracks(&self.pool, Some("pending")).await? as u32;
-        self.library_stats.total_duplicates =
-            db::count_tracks(&self.pool, Some("duplicate")).await? as u32;
+        self.library_stats.total_duplicates = self.duplicates.groups.len() as u32;
         self.library_stats.total_missing =
             db::count_tracks(&self.pool, Some("missing")).await? as u32;
 
@@ -153,4 +161,40 @@ pub enum Screens {
     Start,
     Main,
     Scanning,
+}
+
+pub struct DuplicatesView {
+    pub groups: Vec<DuplicateGroupSummary>,
+    pub groups_state: TableState,
+    pub selected_members: Vec<TrackSummary>,
+    pub members_state: TableState,
+    pub focus: DuplicatePane,
+    pub column_offset: usize,
+}
+
+pub enum DuplicatePane { Groups, Members }
+
+impl DuplicatesView {
+    pub async fn new(pool: &SqlitePool) -> Result<Self, sqlx::Error> {
+        let groups = db::load_duplicate_groups(pool).await?;
+        let mut groups_state = TableState::default();
+        let selected_members = if !groups.is_empty() {
+            groups_state.select(Some(0));
+            db::load_tracks_by_hash(pool, &groups[0].file_hash).await?
+            } else {
+                Vec::new()
+            };
+        Ok (Self {
+            groups,
+            groups_state,
+            selected_members,
+            members_state: TableState::default(),
+            focus: DuplicatePane::Groups,
+            column_offset: 0,
+        })
+    }
+    pub async fn reload(&mut self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        *self = Self::new(pool).await?;
+        Ok(())
+    }
 }

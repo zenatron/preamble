@@ -263,15 +263,6 @@ impl fmt::Display for TrackInfo {
     }
 }
 
-// TODO: implement this
-#[allow(dead_code)]
-pub enum TrackStatus {
-    Pending,
-    Enrichment,
-    Duplicate,
-    Missing,
-}
-
 pub struct TrackSummary {
     pub is_selected: bool,
     pub id: Option<i64>,
@@ -292,4 +283,12 @@ pub struct TrackSummary {
     // pipeline state
     pub status: String,
     pub file_hash: Option<String>,
+}
+
+pub struct DuplicateGroupSummary {
+    pub file_hash: String,
+    pub count: u32,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
 }

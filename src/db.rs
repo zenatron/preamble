@@ -1,4 +1,4 @@
-use crate::track::{TrackInfo, TrackSummary};
+use crate::track::{DuplicateGroupSummary, TrackInfo, TrackSummary};
 use sqlx::{SqlitePool};
 use std::{collections::HashSet, path::PathBuf};
 
@@ -445,4 +445,57 @@ pub async fn load_tracks_paths(pool: &SqlitePool) -> Result<Vec<(i64, PathBuf)>,
 pub async fn update_track_status(pool: &SqlitePool, id: i64, new_status: &str) -> Result<(), sqlx::Error> {
     sqlx::query!(r#"UPDATE tracks SET status = ? WHERE id = ?"#, new_status, id).execute(pool).await?;
     Ok(())
+}
+
+pub async fn load_duplicate_groups(pool: &SqlitePool) -> Result<Vec<DuplicateGroupSummary>, sqlx::Error> {
+
+    Ok(sqlx::query!(
+        r#"SELECT file_hash,
+        COUNT(*) AS n,
+        MIN(title) AS title,
+        MIN(artist) AS artist,
+        MIN(album) AS album 
+        FROM tracks 
+        WHERE file_hash IS NOT NULL 
+        GROUP BY file_hash 
+        HAVING COUNT(*) > 1 
+        ORDER BY n DESC, artist, album, title"#)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| DuplicateGroupSummary {
+            file_hash: row.file_hash.unwrap_or_default(),
+            count: row.n as u32,
+            title: row.title,
+            artist: row.artist,
+            album: row.album,
+        })
+        .collect())
+}
+
+pub async fn load_tracks_by_hash(pool: &SqlitePool, hash: &str) -> Result<Vec<TrackSummary>, sqlx::Error> {
+    Ok(sqlx::query!(
+                r#"SELECT id, isrc, file_path, title, artist, album,
+                file_format, file_size, duration, bitrate, status, file_hash
+                FROM tracks WHERE file_hash = ?"#, hash
+            )
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| TrackSummary {
+                is_selected: false,
+                id: Some(row.id),
+                isrc: row.isrc,
+                file_path: std::path::PathBuf::from(row.file_path),
+                title: row.title,
+                artist: row.artist,
+                album: row.album,
+                file_format: row.file_format,
+                file_size: row.file_size,
+                duration: row.duration.map(|v| v as u32),
+                bitrate: row.bitrate.map(|v| v as u32),
+                status: row.status,
+                file_hash: row.file_hash,
+            })
+            .collect())
 }

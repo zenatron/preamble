@@ -1,7 +1,8 @@
 use crate::app::{self, App};
 use crate::db::{self, load_track_full};
-use crate::formatters::{format_thou, format_track_duration};
+use crate::formatters::{format_thou, format_track_duration, common_path_prefix};
 use crate::reader::{ScanEvent, ValidateEvent, scan_library, validate_paths};
+use crate::track::TrackSummary;
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use humansize::{DECIMAL, format_size};
@@ -516,6 +517,11 @@ fn draw_search_bar(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
     let active_tab_data = &mut app.tabs[app.current_tab];
 
+    if active_tab_data.label == "Duplicates" {
+        draw_duplicates_panel(f, app, area);
+        return;
+    }
+
     if active_tab_data.tracks.len() == 0 {
         f.render_widget(
             Paragraph::new(format!("No {} Tracks Found", active_tab_data.label)).light_magenta(),
@@ -880,4 +886,159 @@ fn draw_confirmation_prompt(
     .centered()
     .block(block);
     f.render_widget(text, inner[1]);
+}
+
+fn draw_duplicates_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.duplicates.groups.is_empty() {
+        f.render_widget(Paragraph::new("No Duplicates Found").light_magenta(), area);
+        return;
+    }
+
+    let panes = Layout::horizontal([
+        Constraint::Fill(1), // group list
+        Constraint::Fill(2), // members grid
+    ])
+    .split(area);
+
+    draw_duplicate_groups_list(f, app, panes[0]);
+    draw_duplicate_members_grid(f, app, panes[1]);
+}
+
+fn draw_duplicate_groups_list(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = app.duplicates.groups.iter().map(|g| {
+        Row::new(vec![
+            Cell::new(format!("×{}", g.count)),
+            Cell::new(g.title.as_deref().unwrap_or("Unknown")),
+            Cell::new(g.artist.as_deref().unwrap_or("Unknown")),
+            Cell::new(g.album.as_deref().unwrap_or("Unknown")),
+        ])
+    });
+
+    let focused = matches!(app.duplicates.focus, app::DuplicatePane::Groups);
+    let border_style = if focused {
+        Style::default().light_green()
+    } else {
+        Style::default()
+    };
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(5),      // ×N badge
+            Constraint::Percentage(40), // title
+            Constraint::Percentage(25), // artist
+            Constraint::Percentage(35), // album
+        ],
+    )
+    .header(
+        Row::new(vec![
+            Cell::new("Cnt"),
+            Cell::new("Title"),
+            Cell::new("Artist"),
+            Cell::new("Album"),
+        ])
+        .bold()
+        .bottom_margin(1),
+    )
+    .block(
+        Block::default()
+            .title(
+                format!(
+                    "Duplicate Groups: [{}/{}]",
+                    app.duplicates.groups_state.selected().unwrap_or(0) + 1,
+                    app.duplicates.groups.len(),
+                )
+                .light_magenta(),
+            )
+            .borders(Borders::ALL)
+            .border_style(border_style),
+    )
+    .row_highlight_style(Style::default().reversed());
+
+    f.render_stateful_widget(table, area, &mut app.duplicates.groups_state);
+}
+
+fn tag_row<F>(label: &str, members: &[TrackSummary], get: F) -> Row<'static>
+where
+    F: Fn(&TrackSummary) -> String,
+{
+    let mut cells = vec![Cell::new(label.to_string()).bold()];
+    for m in members {
+        cells.push(Cell::new(get(m)));
+    }
+    Row::new(cells)
+}
+
+fn draw_duplicate_members_grid(f: &mut Frame, app: &mut App, area: Rect) {
+    let members = &app.duplicates.selected_members;
+
+    if members.is_empty() {
+        f.render_widget(Paragraph::new("No members loaded").light_magenta(), area);
+        return;
+    }
+
+    let paths: Vec<std::path::PathBuf> = members.iter().map(|m| m.file_path.clone()).collect();
+    let prefix = common_path_prefix(&paths);
+    let prefix_label = format!("Members - under {}", prefix.display());
+
+    // Header row: "Tag" + one cell per file
+    let mut header_cells = vec![Cell::new("Tag").bold()];
+    for (i, m) in members.iter().enumerate() {
+        let name = m
+            .file_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?");
+        header_cells.push(Cell::new(format!("[{}] {}", i + 1, name)).bold());
+    }
+
+    let dash = || "-".to_string();
+
+    let rows = vec![
+        tag_row("Title", members, |m| m.title.clone().unwrap_or_else(dash)),
+        tag_row("Artist", members, |m| m.artist.clone().unwrap_or_else(dash)),
+        tag_row("Album", members, |m| m.album.clone().unwrap_or_else(dash)),
+        tag_row("Format", members, |m| {
+            m.file_format.clone().unwrap_or_else(dash)
+        }),
+        tag_row("Bitrate", members, |m| {
+            m.bitrate.map(|b| b.to_string()).unwrap_or_else(dash)
+        }),
+        tag_row("Size", members, |m| {
+            m.file_size
+                .map(|s| format_size(s as u64, DECIMAL))
+                .unwrap_or_else(dash)
+        }),
+        tag_row("Path", members, move |m| {
+            m.file_path
+                .strip_prefix(&prefix)
+                .unwrap_or(&m.file_path)
+                .display()
+                .to_string()
+        }),
+    ];
+
+    let mut widths = vec![Constraint::Length(10)];
+    for _ in members {
+        widths.push(Constraint::Fill(1));
+    }
+
+    let focused = matches!(app.duplicates.focus, app::DuplicatePane::Members);
+    let border_style = if focused {
+        Style::default().light_green()
+    } else {
+        Style::default()
+    };
+
+    let table = Table::new(rows, widths)
+        .header(Row::new(header_cells).bottom_margin(1))
+        .block(
+            Block::default()
+                .title(prefix_label.light_magenta())
+                .borders(Borders::ALL)
+                .border_style(border_style),
+        )
+        .row_highlight_style(Style::default().reversed());
+
+    f.render_stateful_widget(table, area, &mut app.duplicates.members_state);
 }

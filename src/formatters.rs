@@ -18,3 +18,23 @@ pub fn format_thou(n: u32) -> String {
     }
     result.chars().rev().collect()
 }
+
+pub fn common_path_prefix(paths: &[std::path::PathBuf]) -> std::path::PathBuf {
+    if paths.is_empty() {
+        return std::path::PathBuf::new();
+    }
+    let first: Vec<_> = paths[0].components().collect();
+    let mut common_len = first.len();
+    for p in &paths[1..] {
+        let comps: Vec<_> = p.components().collect();
+        let n = first
+            .iter()
+            .zip(comps.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        if n < common_len {
+            common_len = n;
+        }
+    }
+    first.iter().take(common_len).collect()
+}
