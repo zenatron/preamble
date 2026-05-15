@@ -2,7 +2,7 @@ use crate::db;
 
 use crate::reader::{ScanEvent, ValidateEvent};
 use crate::track::{DuplicateGroupSummary, TrackInfo, TrackSummary};
-use ratatui::widgets::TableState;
+use ratatui::widgets::{TableState};
 use sqlx::SqlitePool;
 
 pub struct App {
@@ -92,8 +92,8 @@ impl App {
                 // Duplicate // TODO: Remove later
                 TabData {
                     label: "Duplicates",
-                    status_filter: Some("duplicate"),
-                    tracks: db::load_tracks(&pool, None, Some("duplicate"), None).await?,
+                    status_filter: None,
+                    tracks: Vec::new(),
                     state: TableState::default(),
                 },
                 // Missing
@@ -195,6 +195,15 @@ impl DuplicatesView {
     }
     pub async fn reload(&mut self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
         *self = Self::new(pool).await?;
+        Ok(())
+    }
+
+    pub async fn select_group(&mut self, pool: &SqlitePool, idx: usize) -> Result<(), sqlx::Error> {
+        if idx >= self.groups.len() { return Ok(()); }
+        self.groups_state.select(Some(idx));
+        self.selected_members = db::load_tracks_by_hash(pool, &self.groups[idx].file_hash).await?;
+        self.members_state = TableState::default();
+        self.column_offset = 0;
         Ok(())
     }
 }

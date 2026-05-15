@@ -1,6 +1,6 @@
 use crate::app::{self, App};
 use crate::db::{self, load_track_full};
-use crate::formatters::{format_thou, format_track_duration, common_path_prefix};
+use crate::formatters::{common_path_prefix, format_thou, format_track_duration};
 use crate::reader::{ScanEvent, ValidateEvent, scan_library, validate_paths};
 use crate::track::TrackSummary;
 
@@ -179,7 +179,7 @@ fn draw_main_screen(f: &mut Frame, app: &mut App, area: Rect) {
     .split(area);
 
     draw_tab_bar(f, app, sections[0]);
-    draw_shortcuts_row(f, sections[1]);
+    draw_shortcuts_row(f, app, sections[1]);
     draw_search_bar(f, app, sections[2]);
     draw_table_content(f, app, sections[3]);
 
@@ -342,12 +342,43 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
     }
 
     if key.code == KeyCode::Char('p') {
+
+        if app.tabs[app.current_tab].label == "Duplicates" {
+            match app.duplicates.focus {
+                app::DuplicatePane::Groups => app.duplicates.focus = app::DuplicatePane::Members,
+                app::DuplicatePane::Members => app.duplicates.focus = app::DuplicatePane::Groups,
+            }
+            return;
+        }
+
         app.properties_panel_open = true;
         load_selected_track(app).await;
     }
 
     if key.code == KeyCode::Up {
         // highlight previous track
+
+        if app.tabs[app.current_tab].label == "Duplicates" {
+            match app.duplicates.focus {
+                app::DuplicatePane::Groups => {
+                    let cur = app.duplicates.groups_state.selected().unwrap_or(0);
+                    let new_idx = (cur.saturating_sub(1)).max(0);
+                    if new_idx != cur {
+                        let pool = app.pool.clone();
+                        app.duplicates.select_group(&pool, new_idx).await.ok();
+                    }
+                }
+                app::DuplicatePane::Members => {
+                    if app.duplicates.members_state.selected().is_none() {
+                        app.duplicates.members_state.select(Some(0));
+                    } else {
+                        app.duplicates.members_state.select_previous();
+                    }
+                }
+            }
+            return;
+        }
+
         let active_tab_state = &mut app.tabs[app.current_tab].state;
         if active_tab_state.selected().is_some() {
             active_tab_state.select_previous();
@@ -359,6 +390,29 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
 
     if key.code == KeyCode::Down {
         // highlight next track
+
+        if app.tabs[app.current_tab].label == "Duplicates" {
+            match app.duplicates.focus {
+                app::DuplicatePane::Groups => {
+                    let cur = app.duplicates.groups_state.selected().unwrap_or(0);
+                    let max = app.duplicates.groups.len().saturating_sub(1);
+                    let new_idx = (cur.saturating_add(1)).min(max);
+                    if new_idx != cur {
+                        let pool = app.pool.clone();
+                        app.duplicates.select_group(&pool, new_idx).await.ok();
+                    }
+                }
+                app::DuplicatePane::Members => {
+                    if app.duplicates.members_state.selected().is_none() {
+                        app.duplicates.members_state.select(Some(0));
+                    } else {
+                        app.duplicates.members_state.select_next();
+                    }
+                }
+            }
+            return;
+        }
+
         let active_tab_state = &mut app.tabs[app.current_tab].state;
         if active_tab_state.selected().is_some() {
             active_tab_state.select_next();
@@ -419,7 +473,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
             let active_tab_data = &app.tabs[app.current_tab];
 
             // We do not want to allow delete on these two tabs
-            if matches!(active_tab_data.label, "Library" | "Enrichment") {
+            if matches!(active_tab_data.label, "Library" | "Enrichment" | "Duplicates") {
                 app.pending_delete = false;
                 return;
             }
@@ -491,13 +545,20 @@ fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(tab_bar, area);
 }
 
-fn draw_shortcuts_row(f: &mut Frame, area: Rect) {
-    f.render_widget(
-        Paragraph::new("Shortcuts: | cycle [TAB]s | [SPACE]lect | [U]nvert selection | s[I]lect all | select n[O]ne | [D]elete | [ESC]ape | [P]roperties | sea[/]rch"
-        )
-        .blue(),
-        area
-    );
+fn draw_shortcuts_row(f: &mut Frame, app: &mut App, area: Rect) {
+
+    let shorty;
+
+    match app.tabs[app.current_tab].label {
+        "Duplicates" => {
+            shorty = Paragraph::new("Shortcuts: | cycle [TAB]s | [SPACE]lect | [D]elete | [ESC]ape | switch [P]anels").blue();
+        },
+        _ => {
+            shorty = Paragraph::new("Shortcuts: | cycle [TAB]s | [SPACE]lect | [U]nvert selection | s[I]lect all | select n[O]ne | [D]elete | [ESC]ape | [P]roperties | sea[/]rch").blue();
+        }
+    }
+
+    f.render_widget(shorty, area);
 }
 
 fn draw_search_bar(f: &mut Frame, app: &mut App, area: Rect) {
