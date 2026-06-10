@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) FROM tracks\n        WHERE file_format IN ('FLAC','ALAC','APE','WAV','AIFF','WAVPACK')",
+  "describe": {
+    "columns": [
+      {
+        "name": "COUNT(*)",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "05a25d9761577c6a0f88600291703b575bbe46a8180fa2eaeb3b1fe115259df4"
+}

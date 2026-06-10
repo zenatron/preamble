@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE tracks SET\n            acoustid = COALESCE(acoustid, ?),\n            musicbrainz_recording_id = COALESCE(musicbrainz_recording_id, ?),\n            musicbrainz_release_group_id = COALESCE(musicbrainz_release_group_id, ?),\n            musicbrainz_artist_id = COALESCE(musicbrainz_artist_id, ?),\n            title = COALESCE(title, ?),\n            artist = COALESCE(artist, ?),\n            album = COALESCE(album, ?),\n            status = 'enriched',\n            enriched_at = CURRENT_TIMESTAMP\n        WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "2d442de6dbad3f48b1ff4a8ea9e63a46712ca2f26554a84147e286cd0b68d9a2"
+}

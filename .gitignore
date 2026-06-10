@@ -4,9 +4,23 @@
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
 
 # Env
 .env
+
+# Local config
+preamble.toml
+
+# Logs & quarantine
+preamble.log
+/quarantine
+/preamble_quarantine
+
+# Exports
+preamble-*.csv
+preamble-*.json
+preamble-*.m3u
 
 #Sqlx cache
 # .sqlx

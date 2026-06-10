@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT health_issue AS \"issue!\", COUNT(*) AS \"n!\"\n        FROM tracks WHERE health_issue IS NOT NULL GROUP BY health_issue ORDER BY 2 DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "issue!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "36a863c5347571ee6045a777e52cd34e522f0db197f105d8bf8589ec8835bcd3"
+}
