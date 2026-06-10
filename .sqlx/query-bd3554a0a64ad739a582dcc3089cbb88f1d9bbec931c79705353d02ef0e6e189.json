@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(album, '(unknown)') AS \"name!\",\n                COUNT(*) AS \"count!\",\n                COALESCE(SUM(file_size), 0) AS \"total_size!\",\n                COALESCE(SUM(duration), 0) AS \"total_duration!\"\n                FROM tracks GROUP BY album ORDER BY 2 DESC, 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "count!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "total_size!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "total_duration!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bd3554a0a64ad739a582dcc3089cbb88f1d9bbec931c79705353d02ef0e6e189"
+}

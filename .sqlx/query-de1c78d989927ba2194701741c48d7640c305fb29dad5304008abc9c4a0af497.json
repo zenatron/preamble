@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n        SELECT id, isrc, file_path,\n        title, artist, album,\n        file_format, file_size, duration, bitrate,\n        status, file_hash\n        FROM tracks\n        ",
+  "query": "SELECT id, isrc, file_path, title, artist, album,\n                file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue\n                FROM tracks\n                WHERE (title LIKE ? OR artist LIKE ? OR album LIKE ?\n                    OR album_artist LIKE ? OR genre LIKE ?)\n                AND status = ?",
   "describe": {
     "columns": [
       {
@@ -62,25 +62,37 @@
         "name": "file_hash",
         "ordinal": 11,
         "type_info": "Text"
+      },
+      {
+        "name": "marked_for_deletion",
+        "ordinal": 12,
+        "type_info": "Integer"
+      },
+      {
+        "name": "health_issue",
+        "ordinal": 13,
+        "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 6
     },
     "nullable": [
+      true,
+      true,
       false,
       true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
       false,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
       true,
       false,
       true
     ]
   },
-  "hash": "f544f9d48e60f97c9171a867af79040ba29a141a3304eae036d67c3e95f3ba7c"
+  "hash": "de1c78d989927ba2194701741c48d7640c305fb29dad5304008abc9c4a0af497"
 }

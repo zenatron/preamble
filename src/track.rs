@@ -7,70 +7,6 @@ use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use std::path::{Path, PathBuf};
 
-pub fn _read_tags_fake(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(TrackInfo {
-        id: None,
-        file_path: path.to_path_buf(),
-
-        // track info
-        title: None,
-        artist: None,
-        album: None,
-        album_artist: None,
-        album_artists: None,
-        composer: None,
-        label: None,
-        genre: None,
-        comment: None,
-        lyrics: None,
-        track: None,
-        track_total: None,
-        disc: None,
-        disc_total: None,
-        release_year: None,
-        recording_date: None,
-        original_release_date: None,
-        release_type: None,
-        compilation: None,
-        isrc: None,
-        barcode: None,
-        catalog_number: None,
-        bpm: None,
-        language: None,
-        script: None,
-        mood: None,
-        replay_gain_track_gain: None,
-        replay_gain_track_peak: None,
-        replay_gain_album_gain: None,
-        replay_gain_album_peak: None,
-
-        // tech properties
-        file_format: None,
-        file_size: None,
-        duration: None,
-        bitrate: None,
-        sample_rate: None,
-        bit_depth: None,
-        channels: None,
-
-        // dumb stuff
-        acoustid: None,
-        musicbrainz_recording_id: None,
-        musicbrainz_track_id: None,
-        musicbrainz_release_id: None,
-        musicbrainz_release_group_id: None,
-        musicbrainz_artist_id: None,
-        musicbrainz_release_artist_id: None,
-        musicbrainz_work_id: None,
-
-        // pipeline state
-        status: "dummy".to_string(),
-
-        // file hash
-        file_hash: None,
-    })
-}
-
 pub fn read_tags(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + Send + Sync>> {
     let reader = Probe::open(path)?;
     let file = reader.read()?;
@@ -95,7 +31,11 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + S
         artist: tag.and_then(|t| t.artist().map(|s| s.to_string())),
         album: tag.and_then(|t| t.album().map(|s| s.to_string())),
         album_artist: get(ItemKey::AlbumArtist),
-        album_artists: get(ItemKey::AlbumArtist),
+        // All album-artist values joined, in case the file lists several.
+        album_artists: tag.and_then(|t| {
+            let joined: Vec<&str> = t.get_strings(&ItemKey::AlbumArtist).collect();
+            (!joined.is_empty()).then(|| joined.join("; "))
+        }),
         composer: get(ItemKey::Composer),
         label: get(ItemKey::Label),
         genre: tag.and_then(|t| t.genre().map(|s| s.to_string())),
@@ -177,6 +117,81 @@ pub fn hash_file(path: &PathBuf) -> Option<String> {
     Some(blake3::hash(&data).to_hex().to_string())
 }
 
+/// Editable tag fields, as raw editor strings. An empty string clears the tag.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TagEdits {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_artist: String,
+    pub genre: String,
+    pub comment: String,
+    pub track: String,
+    pub disc: String,
+    pub year: String,
+}
+
+impl TagEdits {
+    pub fn opt(s: &str) -> Option<&str> {
+        let s = s.trim();
+        (!s.is_empty()).then_some(s)
+    }
+}
+
+/// Writes the edited tags back into the audio file via lofty. Empty fields
+/// remove the corresponding tag; numeric fields that don't parse are ignored.
+pub fn write_tags(
+    path: &Path,
+    e: &TagEdits,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use lofty::config::WriteOptions;
+    use lofty::tag::Tag;
+
+    let mut tagged = lofty::read_from_path(path)?;
+    if tagged.primary_tag().is_none() {
+        let tag_type = tagged.primary_tag_type();
+        tagged.insert_tag(Tag::new(tag_type));
+    }
+    let tag = tagged.primary_tag_mut().expect("tag inserted above");
+
+    // Text fields: set when non-empty, otherwise clear.
+    let mut text = |key: ItemKey, value: &str| {
+        let value = value.trim();
+        if value.is_empty() {
+            tag.remove_key(&key);
+        } else {
+            tag.insert_text(key, value.to_string());
+        }
+    };
+    text(ItemKey::TrackTitle, &e.title);
+    text(ItemKey::TrackArtist, &e.artist);
+    text(ItemKey::AlbumTitle, &e.album);
+    text(ItemKey::AlbumArtist, &e.album_artist);
+    text(ItemKey::Genre, &e.genre);
+    text(ItemKey::Comment, &e.comment);
+
+    // Numeric fields.
+    let mut num = |key: ItemKey, value: &str| {
+        let value = value.trim();
+        match value.parse::<u32>() {
+            Ok(n) => {
+                tag.insert_text(key, n.to_string());
+            }
+            Err(_) if value.is_empty() => {
+                tag.remove_key(&key);
+            }
+            Err(_) => {}
+        }
+    };
+    num(ItemKey::TrackNumber, &e.track);
+    num(ItemKey::DiscNumber, &e.disc);
+    num(ItemKey::Year, &e.year);
+
+    tagged.save_to_path(path, WriteOptions::default())?;
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TrackInfo {
     pub id: Option<i64>,
     pub file_path: PathBuf,
@@ -263,7 +278,9 @@ impl fmt::Display for TrackInfo {
     }
 }
 
+#[derive(serde::Serialize)]
 pub struct TrackSummary {
+    #[serde(skip)]
     pub is_selected: bool,
     pub id: Option<i64>,
     pub isrc: Option<String>,
@@ -283,10 +300,32 @@ pub struct TrackSummary {
     // pipeline state
     pub status: String,
     pub file_hash: Option<String>,
+    pub marked_for_deletion: bool,
+    pub health_issue: Option<String>,
+}
+
+/// How a duplicate group's members were matched together.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DuplicateKind {
+    /// Byte-for-byte identical files (same BLAKE3 hash).
+    Hash,
+    /// Same recording across different files/formats (same ISRC).
+    Isrc,
+}
+
+impl DuplicateKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            DuplicateKind::Hash => "hash",
+            DuplicateKind::Isrc => "isrc",
+        }
+    }
 }
 
 pub struct DuplicateGroupSummary {
-    pub file_hash: String,
+    pub kind: DuplicateKind,
+    /// The shared key: a file hash or an ISRC depending on `kind`.
+    pub key: String,
     pub count: u32,
     pub title: Option<String>,
     pub artist: Option<String>,

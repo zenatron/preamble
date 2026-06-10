@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT file_hash,\n        COUNT(*) AS n,\n        MIN(title) AS title,\n        MIN(artist) AS artist,\n        MIN(album) AS album\n        FROM tracks\n        WHERE file_hash IS NOT NULL AND marked_for_deletion = 0\n        GROUP BY file_hash\n        HAVING COUNT(*) > 1\n        ORDER BY n DESC, artist, album, title",
+  "describe": {
+    "columns": [
+      {
+        "name": "file_hash",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "title",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "artist",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "album",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "d766e8976fbcfeadcafb61f3e93789182c14845c6eb35aa2904e8e77a16c65d6"
+}

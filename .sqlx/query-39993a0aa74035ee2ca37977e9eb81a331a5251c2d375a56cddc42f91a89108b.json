@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT isrc,\n        COUNT(*) AS n,\n        MIN(title) AS title,\n        MIN(artist) AS artist,\n        MIN(album) AS album\n        FROM tracks\n        WHERE isrc IS NOT NULL AND isrc != '' AND marked_for_deletion = 0\n        GROUP BY isrc\n        HAVING COUNT(*) > 1\n            AND COUNT(DISTINCT COALESCE(file_hash, CAST(id AS TEXT))) > 1\n        ORDER BY n DESC, artist, album, title",
+  "describe": {
+    "columns": [
+      {
+        "name": "isrc",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "title",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "artist",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "album",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "39993a0aa74035ee2ca37977e9eb81a331a5251c2d375a56cddc42f91a89108b"
+}

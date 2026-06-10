@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE tracks SET\n            title = ?, artist = ?, album = ?, album_artist = ?,\n            genre = ?, comment = ?, track = ?, disc = ?, release_year = ?,\n            status = 'manual_review'\n        WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "c255428ca37a2a1575c697e5ef26d15361c8a348c8f0a1ad77b0805e2bcc207a"
+}

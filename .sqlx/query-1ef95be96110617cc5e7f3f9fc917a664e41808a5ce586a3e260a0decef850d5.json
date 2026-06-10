@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS \"n!\", COALESCE(SUM(file_size), 0) AS \"size!\",\n        COALESCE(SUM(duration), 0) AS \"dur!\", COALESCE(AVG(bitrate), 0.0) AS \"avg!\"\n        FROM tracks",
+  "describe": {
+    "columns": [
+      {
+        "name": "n!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "size!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "dur!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "avg!",
+        "ordinal": 3,
+        "type_info": "Float"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1ef95be96110617cc5e7f3f9fc917a664e41808a5ce586a3e260a0decef850d5"
+}

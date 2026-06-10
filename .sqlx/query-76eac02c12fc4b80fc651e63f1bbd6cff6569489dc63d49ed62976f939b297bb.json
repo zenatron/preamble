@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE tracks SET\n            title = ?, artist = ?, album = ?, album_artist = ?, album_artists = ?,\n            composer = ?, label = ?, genre = ?, comment = ?, lyrics = ?,\n            track = ?, track_total = ?, disc = ?, disc_total = ?,\n            release_year = ?, recording_date = ?, original_release_date = ?,\n            isrc = ?, barcode = ?, catalog_number = ?, bpm = ?,\n            language = ?, script = ?, mood = ?,\n            replay_gain_track_gain = ?, replay_gain_track_peak = ?,\n            replay_gain_album_gain = ?, replay_gain_album_peak = ?,\n            file_format = ?, file_size = ?, duration = ?, bitrate = ?,\n            sample_rate = ?, bit_depth = ?, channels = ?, file_hash = ?,\n            last_scanned_at = CURRENT_TIMESTAMP\n        WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 37
+    },
+    "nullable": []
+  },
+  "hash": "76eac02c12fc4b80fc651e63f1bbd6cff6569489dc63d49ed62976f939b297bb"
+}

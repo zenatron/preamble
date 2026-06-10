@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE action_log SET undone = 1 WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7bb5c5db34b9d09034adbf36c95e8c277935bffe3fe11d70adbc4bc88ad693b0"
+}

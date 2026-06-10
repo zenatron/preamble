@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE tracks SET marked_for_deletion = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "64b68b5d89fa846381f918f17459b1512ddc8ecc71d86a3be4531ffb3e90a82d"
+}

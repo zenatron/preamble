@@ -1,0 +1,24 @@
+# preamble configuration
+
+# library_path     : default directory scanned when no CLI path is given
+# formats          : audio file extensions to scan (lowercase, no dot)
+# scan_concurrency : files hashed/read in parallel during a scan
+# acoustid_api_key : optional; prefer the ACOUSTID_API_KEY env var / .env
+
+# library_path = "/path/to/music"
+formats = [
+    "flac",
+    "mp3",
+    "m4a",
+    "mp4",
+    "ogg",
+    "opus",
+    "aiff",
+    "wav",
+    "wv",
+    "ape",
+    "mpc",
+    "aac",
+]
+scan_concurrency = 8
+# acoustid_api_key = ""

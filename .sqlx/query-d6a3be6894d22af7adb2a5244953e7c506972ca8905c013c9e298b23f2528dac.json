@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT status AS \"s!\", COUNT(*) AS \"n!\"\n        FROM tracks GROUP BY status ORDER BY 2 DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "s!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d6a3be6894d22af7adb2a5244953e7c506972ca8905c013c9e298b23f2528dac"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT isrc FROM tracks WHERE isrc IS NOT NULL",
+  "query": "SELECT isrc FROM tracks WHERE isrc IS NOT NULL AND isrc != ''",
   "describe": {
     "columns": [
       {
@@ -16,5 +16,5 @@
       true
     ]
   },
-  "hash": "c7641cf911450a26cccf8a6d59ae4398cdb4468772453bd2999a857ab90b2179"
+  "hash": "7095cce01e7f3f4963d935836f06f53bf386aa45bb973beac0a612ff0f50c96a"
 }

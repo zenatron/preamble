@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT file_format FROM tracks\n        WHERE file_format IS NOT NULL ORDER BY file_format",
+  "describe": {
+    "columns": [
+      {
+        "name": "file_format",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "e56cda8a007c91ace5c2bbc54f61b0d4e831fc312f8417efb9b19de6ff0c0ffd"
+}
