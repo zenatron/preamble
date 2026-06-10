@@ -1,5 +1,8 @@
 # preamble configuration
 
+# See https://github.com/zenatron/preamble#configuration
+# for configuration details
+
 # library_path     : default directory scanned when no CLI path is given
 # formats          : audio file extensions to scan (lowercase, no dot)
 # scan_concurrency : files hashed/read in parallel during a scan
