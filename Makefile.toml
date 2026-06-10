@@ -1,3 +1,9 @@
+# build process for Linux and Apple Silicon using cargo-make
+
+# rustup target add x86_64-unknown-linux-musl
+# rustup target add aarch64-apple-darwin
+# sqlx migrate run
+
 [tasks.build-linux]
 env = { CC_x86_64_unknown_linux_musl = "x86_64-linux-musl-gcc", CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "x86_64-linux-musl-gcc" }
 command = "cargo"
@@ -12,3 +18,21 @@ script = [
     mv target/x86_64-unknown-linux-musl/release/preamble target/x86_64-unknown-linux-musl/release/preamble-$version-linux
     '''
 ]
+
+[tasks.build-apple-silicon]
+command = "cargo"
+args = ["build", "--release", "--target", "aarch64-apple-darwin"]
+
+[tasks.release-apple-silicon]
+description = "Build and rename Apple Silicon release binary with version"
+dependencies = ["build-apple-silicon"]
+script = [
+    '''
+    version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+    mv target/aarch64-apple-darwin/release/preamble target/aarch64-apple-darwin/release/preamble-$version-apple-silicon
+    '''
+]
+
+[tasks.build-all]
+description = "Build and rename all release binaries"
+dependencies = ["release-linux", "release-apple-silicon"]
