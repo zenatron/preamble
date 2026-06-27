@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT health_issue AS \"issue!: String\", COUNT(*) AS \"n!: i64\"\n        FROM tracks WHERE library_id = ? AND health_issue IS NOT NULL\n        GROUP BY health_issue ORDER BY 2 DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "issue!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "45a66b258f987c2288de4dc31b54c0955637bf85ab4099cd8949c86766a1a710"
+}

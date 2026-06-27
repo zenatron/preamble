@@ -20,6 +20,10 @@ pub struct RestoredTrack {
     pub track: TrackInfo,
     pub original_path: PathBuf,
     pub quarantine_path: PathBuf,
+    /// The library the track was purged from, so undo restores it in place.
+    /// Defaults to 0 for payloads written before multi-library support.
+    #[serde(default)]
+    pub library_id: i64,
 }
 
 /// The operation that undoes a logged action.
@@ -59,7 +63,7 @@ impl UndoAction {
                     if rt.quarantine_path.exists() {
                         move_file(&rt.quarantine_path, &rt.original_path)?;
                     }
-                    db::insert_track_pool(pool, &rt.track).await?;
+                    db::insert_track_pool(pool, &rt.track, rt.library_id).await?;
                     restored += 1;
                 }
                 Ok(format!("restored {restored} purged track(s)"))

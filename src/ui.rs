@@ -19,6 +19,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
     match app.current_screen {
+        app::Screens::Picker => {
+            draw_picker_screen(f, app, area);
+        }
+        app::Screens::CreateLibrary => {
+            draw_create_library_screen(f, app, area);
+        }
         app::Screens::Start => {
             draw_start_screen(f, app, area);
         }
@@ -218,6 +224,153 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
+/// The preamble wordmark, shared by the picker / create / start screens.
+fn preamble_logo() -> ratatui::text::Text<'static> {
+    ratatui::text::Text::from(vec![
+        Line::from("                                _     _      "),
+        Line::from(" _ __  _ __ ___  __ _ _ __ ___ | |__ | | ___ "),
+        Line::from("| '_ \\| '__/ _ \\/ _` | '_ ` _ \\| '_ \\| |/ _ \\"),
+        Line::from("| |_) | | |  __/ (_| | | | | | | |_) | |  __/"),
+        Line::from("| .__/|_| \\___/\\___|_|_| |_| |_|_.__/|_|\\___|"),
+        Line::from("|_|                                          "),
+    ])
+    .light_red()
+}
+
+/// Library picker: lists known libraries plus a trailing "Create new..." row.
+fn draw_picker_screen(f: &mut Frame, app: &mut App, area: Rect) {
+    use ratatui::layout::Alignment;
+    let sections = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(6), // title
+        Constraint::Length(2), // subtitle
+        Constraint::Min(6),    // list
+        Constraint::Length(2), // hints
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    f.render_widget(preamble_logo().alignment(Alignment::Center), sections[1]);
+    f.render_widget(
+        Paragraph::new("Select a library")
+            .alignment(Alignment::Center)
+            .blue(),
+        sections[2],
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, lib) in app.libraries.iter().enumerate() {
+        let selected = i == app.picker_index;
+        let marker = if selected { "▶ " } else { "  " };
+        let line = Line::from(format!("{marker}{}  —  {}", lib.name, lib.path));
+        lines.push(if selected {
+            line.style(Style::default().light_cyan().add_modifier(Modifier::BOLD))
+        } else {
+            line
+        });
+    }
+    let create_selected = app.picker_index >= app.libraries.len();
+    let marker = if create_selected { "▶ " } else { "  " };
+    let create_line = Line::from(format!("{marker}➕ Create new library…"));
+    lines.push(if create_selected {
+        create_line.style(Style::default().light_green().add_modifier(Modifier::BOLD))
+    } else {
+        create_line
+    });
+
+    let list = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(" Libraries "));
+    let width = 60.min(area.width.saturating_sub(4));
+    f.render_widget(list, centered_popup(sections[3], width, sections[3].height));
+
+    f.render_widget(
+        Paragraph::new("[↑/↓] move   [enter] open / create   [q] quit")
+            .alignment(Alignment::Center)
+            .style(Style::new().add_modifier(Modifier::BOLD)),
+        sections[4],
+    );
+
+    let bottom = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+    draw_status_bar(f, app, bottom);
+}
+
+/// Create-library form: a Path field and a Name field with focus highlighting.
+fn draw_create_library_screen(f: &mut Frame, app: &mut App, area: Rect) {
+    use ratatui::layout::Alignment;
+    let sections = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(6), // title
+        Constraint::Length(2), // subtitle
+        Constraint::Length(6), // form
+        Constraint::Length(2), // hints
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    f.render_widget(preamble_logo().alignment(Alignment::Center), sections[1]);
+    f.render_widget(
+        Paragraph::new("Create a new library")
+            .alignment(Alignment::Center)
+            .blue(),
+        sections[2],
+    );
+
+    let path_focused = app.new_lib_focus == app::NewLibField::Path;
+    let name_focused = app.new_lib_focus == app::NewLibField::Name;
+    let field_style = |on: bool| {
+        if on {
+            Style::default().light_cyan().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        }
+    };
+    let caret = |on: bool| if on { "_" } else { "" };
+
+    let form_lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  Path:  "),
+            Span::styled(
+                format!("{}{}", app.new_lib_path, caret(path_focused)),
+                field_style(path_focused),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  Name:  "),
+            Span::styled(
+                format!("{}{}", app.new_lib_name, caret(name_focused)),
+                field_style(name_focused),
+            ),
+        ]),
+    ];
+
+    let form = Paragraph::new(form_lines)
+        .block(Block::default().borders(Borders::ALL).title(" New Library "));
+    let width = 60.min(area.width.saturating_sub(4));
+    f.render_widget(form, centered_popup(sections[3], width, sections[3].height));
+
+    f.render_widget(
+        Paragraph::new("[tab] switch field   [enter] create   [esc] back")
+            .alignment(Alignment::Center)
+            .style(Style::new().add_modifier(Modifier::BOLD)),
+        sections[4],
+    );
+
+    let bottom = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+    draw_status_bar(f, app, bottom);
+}
+
 fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
     let sections = Layout::vertical([
         Constraint::Fill(1),   // top padding
@@ -291,15 +444,27 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(stats).alignment(ratatui::layout::Alignment::Center),
         sections[3],
     );
+    let lib_name = app
+        .active_library
+        .as_ref()
+        .map(|l| l.name.as_str())
+        .unwrap_or("(none)");
     f.render_widget(
-        Paragraph::new(format!("Path to Scan: {:?}", app.pending_scan_path))
-            .alignment(ratatui::layout::Alignment::Center)
-            .light_cyan(),
+        Paragraph::new(format!(
+            "Library: {}   ·   Path: {}",
+            lib_name,
+            app.pending_scan_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(none)".to_string())
+        ))
+        .alignment(ratatui::layout::Alignment::Center)
+        .light_cyan(),
         sections[4],
     );
     f.render_widget(
         Paragraph::new(format!(
-            "[s] Scan new   [u] Rescan changed   [r] Fresh scan (rebuilds DB)\n[v] Validate paths   [h] Health check\n[enter] View Library    [q] Quit"
+            "[s] Scan new   [u] Rescan changed   [r] Fresh scan (rebuilds DB)\n[v] Validate paths   [h] Health check   [L] Switch library\n[enter] View Library    [q] Quit"
         )).style(Style::new().add_modifier(Modifier::BOLD))
         .alignment(ratatui::layout::Alignment::Center),
         sections[5],
@@ -491,6 +656,7 @@ async fn purge_marked(app: &mut App) {
                 track,
                 original_path: path,
                 quarantine_path: qpath,
+                library_id: app.active_library_id(),
             });
         }
     }
@@ -681,11 +847,20 @@ fn render_stats_panel(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line>) 
 }
 
 pub async fn poll_events(app: &mut App) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // poll at 15 FPS
+    // Poll for input at ~15 FPS. An available event means something may have
+    // changed, so request a redraw; an idle screen produces no events and so is
+    // not needlessly repainted.
     if crossterm::event::poll(std::time::Duration::from_millis(1000 / 15))? {
+        app.needs_redraw = true;
         match crossterm::event::read()? {
             Event::Key(key) => {
                 match app.current_screen {
+                    app::Screens::Picker => {
+                        handle_picker_navigation(app, key).await;
+                    }
+                    app::Screens::CreateLibrary => {
+                        handle_create_navigation(app, key).await;
+                    }
                     app::Screens::Start => {
                         handle_start_navigation(app, key).await;
                     }
@@ -788,7 +963,110 @@ fn rect_contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
+/// Library picker: move the highlight over known libraries plus a trailing
+/// "Create new..." row; Enter opens the highlighted library or starts the create
+/// form. `q` quits (nothing is open yet).
+async fn handle_picker_navigation(app: &mut App, key: KeyEvent) {
+    let create_row = app.libraries.len(); // index of the "Create new..." entry
+    match key.code {
+        KeyCode::Char('q') => app.quit_confirmed = true,
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.picker_index = app.picker_index.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.picker_index < create_row {
+                app.picker_index += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if app.picker_index >= create_row {
+                app.new_lib_path.clear();
+                app.new_lib_name.clear();
+                app.new_lib_focus = app::NewLibField::Path;
+                app.current_screen = app::Screens::CreateLibrary;
+            } else if let Some(lib) = app.libraries.get(app.picker_index).cloned() {
+                if let Err(e) = app.open_library(lib).await {
+                    app.set_status(StatusLevel::Error, format!("Open failed: {e}"));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Create-library form: edit the Path/Name fields, Enter validates and creates,
+/// Esc backs out to the picker (or quits when there are no libraries yet).
+async fn handle_create_navigation(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.refresh_libraries().await.ok();
+            if app.libraries.is_empty() {
+                app.quit_confirmed = true;
+            } else {
+                app.current_screen = app::Screens::Picker;
+            }
+        }
+        KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
+            app.new_lib_focus = match app.new_lib_focus {
+                app::NewLibField::Path => app::NewLibField::Name,
+                app::NewLibField::Name => app::NewLibField::Path,
+            };
+        }
+        KeyCode::Backspace => match app.new_lib_focus {
+            app::NewLibField::Path => {
+                app.new_lib_path.pop();
+            }
+            app::NewLibField::Name => {
+                app.new_lib_name.pop();
+            }
+        },
+        KeyCode::Char(c) => match app.new_lib_focus {
+            app::NewLibField::Path => app.new_lib_path.push(c),
+            app::NewLibField::Name => app.new_lib_name.push(c),
+        },
+        KeyCode::Enter => create_library_from_form(app).await,
+        _ => {}
+    }
+}
+
+/// Validates the create form and, on success, creates the library and opens it.
+async fn create_library_from_form(app: &mut App) {
+    let path = app.new_lib_path.trim().to_string();
+    let name = app.new_lib_name.trim().to_string();
+    if path.is_empty() || name.is_empty() {
+        app.set_status(StatusLevel::Warning, "Both a path and a name are required.");
+        return;
+    }
+    if !std::path::Path::new(&path).is_dir() {
+        app.set_status(StatusLevel::Error, format!("Not a directory: {path}"));
+        return;
+    }
+    // Friendlier than letting the UNIQUE(path) constraint surface as an error.
+    if matches!(
+        db::find_library_by_path(&app.pool, &path).await,
+        Ok(Some(_))
+    ) {
+        app.set_status(
+            StatusLevel::Warning,
+            "A library already exists for that path.",
+        );
+        return;
+    }
+    match db::create_library(&app.pool, &name, &path).await {
+        Ok(lib) => match app.open_library(lib).await {
+            Ok(()) => app.set_status(StatusLevel::Success, format!("Created library \"{name}\".")),
+            Err(e) => app.set_status(StatusLevel::Error, format!("Open failed: {e}")),
+        },
+        Err(e) => app.set_status(
+            StatusLevel::Error,
+            format!("Create failed (name already taken?): {e}"),
+        ),
+    }
+}
+
 async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
+    let library_id = app.active_library_id();
+
     if key.code == KeyCode::Char('q') && !app.search_mode {
         if app.should_quit {
             app.quit_confirmed = true;
@@ -799,6 +1077,13 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
         app.should_quit = false;
     }
 
+    // [L] switch libraries: back to the picker without restarting.
+    if key.code == KeyCode::Char('L') {
+        app.refresh_libraries().await.ok();
+        app.current_screen = app::Screens::Picker;
+        return;
+    }
+
     if key.code == KeyCode::Char('s') {
         if let Some(ref path) = app.pending_scan_path {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -807,6 +1092,7 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
             app.scan_label = "Scanning";
             tokio::spawn(scan_library(
                 app.pool.clone(),
+                library_id,
                 path.clone(),
                 app.config.formats.clone(),
                 app.config.scan_concurrency,
@@ -826,7 +1112,15 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
         app.scan_receiver = Some(rx);
         app.scan_label = "Health check";
         let threshold = app.config.low_bitrate_threshold;
-        tokio::spawn(health_check(app.pool.clone(), threshold, cancel, tx));
+        let concurrency = app.config.scan_concurrency;
+        tokio::spawn(health_check(
+            app.pool.clone(),
+            library_id,
+            threshold,
+            concurrency,
+            cancel,
+            tx,
+        ));
         app.current_screen = app::Screens::Scanning;
     }
 
@@ -838,6 +1132,7 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
         app.scan_label = "Rescanning";
         tokio::spawn(rescan_changed(
             app.pool.clone(),
+            library_id,
             app.config.scan_concurrency,
             cancel,
             tx,
@@ -847,13 +1142,14 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
 
     if key.code == KeyCode::Char('r') {
         if let Some(ref path) = app.pending_scan_path {
-            db::truncate_tracks(&app.pool).await.ok();
+            db::truncate_tracks(&app.pool, library_id).await.ok();
             let (tx, rx) = tokio::sync::mpsc::channel::<ScanEvent>(100);
             let cancel = app.begin_cancelable();
             app.scan_receiver = Some(rx);
             app.scan_label = "Scanning";
             tokio::spawn(scan_library(
                 app.pool.clone(),
+                library_id,
                 path.clone(),
                 app.config.formats.clone(),
                 app.config.scan_concurrency,
@@ -870,7 +1166,12 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
         let (tx, rx) = tokio::sync::oneshot::channel::<ValidateEvent>();
         app.is_validating = true;
         app.validating_receiver = Some(rx);
-        tokio::spawn(validate_paths(app.pool.clone(), tx));
+        tokio::spawn(validate_paths(
+            app.pool.clone(),
+            library_id,
+            app.config.scan_concurrency,
+            tx,
+        ));
     }
 
     if key.code == KeyCode::Enter {
@@ -1011,9 +1312,10 @@ async fn handle_export_mode(app: &mut App, key: KeyEvent) {
 async fn build_duplicate_report(app: &App) -> Vec<crate::export::DuplicateReportRow> {
     let mut rows = Vec::new();
     for group in &app.duplicates.groups {
-        let members = db::load_duplicate_members(&app.pool, group.kind, &group.key)
-            .await
-            .unwrap_or_default();
+        let members =
+            db::load_duplicate_members(&app.pool, group.kind, &group.key, app.active_library_id())
+                .await
+                .unwrap_or_default();
         for m in members {
             rows.push(crate::export::DuplicateReportRow {
                 group_kind: group.kind.label(),
@@ -1126,6 +1428,13 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // [L] switch libraries: back to the picker without restarting.
+    if key.code == KeyCode::Char('L') {
+        app.refresh_libraries().await.ok();
+        app.current_screen = app::Screens::Picker;
+        return;
+    }
+
     // Enter search mode (not meaningful on the Duplicates grid).
     if key.code == KeyCode::Char('/') && app.tabs[app.current_tab].label != "Duplicates" {
         app.search_mode = true;
@@ -1173,7 +1482,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
 
     // [c] open the statistics screen.
     if key.code == KeyCode::Char('c') {
-        match db::compute_stats(&app.pool).await {
+        match db::compute_stats(&app.pool, app.active_library_id()).await {
             Ok(stats) => {
                 app.stats = Some(stats);
                 app.current_screen = app::Screens::Stats;
@@ -1526,7 +1835,13 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                 app.enrich_receiver = Some(rx);
                 app.is_enriching = true;
                 app.enrich_progress = Some((0, app.tabs[app.current_tab].tracks.len()));
-                tokio::spawn(enrich_pending(app.pool.clone(), api_key, cancel, tx));
+                tokio::spawn(enrich_pending(
+                    app.pool.clone(),
+                    app.active_library_id(),
+                    api_key,
+                    cancel,
+                    tx,
+                ));
             } else {
                 app.set_status(
                     StatusLevel::Error,
@@ -2368,6 +2683,22 @@ mod tests {
         app.tabs.iter().position(|t| t.label == label).unwrap()
     }
 
+    /// Assigns any orphan (raw-inserted) tracks to a default library, builds the
+    /// app, and opens that library so the tabs are hydrated. Tests insert tracks
+    /// before calling this.
+    async fn open_default(pool: &sqlx::SqlitePool) -> App {
+        db::ensure_default_library(pool, None).await.unwrap();
+        let lib = db::list_libraries(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let mut app = App::new(pool.clone(), Config::default()).await.unwrap();
+        app.open_library(lib).await.unwrap();
+        app
+    }
+
     #[tokio::test]
     async fn d_flags_highlighted_track_into_trash() {
         let pool = test_pool().await;
@@ -2378,18 +2709,19 @@ mod tests {
         .await
         .unwrap();
 
-        let mut app = App::new(pool.clone(), None, Config::default())
-            .await
-            .unwrap();
+        let mut app = open_default(&pool).await;
         app.current_screen = app::Screens::Main;
         app.current_tab = tab_index(&app, "Library");
         app.tabs[app.current_tab].state.select(Some(0));
 
         handle_main_navigation(&mut app, press('d')).await;
 
-        assert_eq!(db::count_marked(&pool).await.unwrap(), 1);
-        // The flagged track now appears in the Trash tab after reload.
+        assert_eq!(db::count_marked(&pool, app.active_library_id()).await.unwrap(), 1);
+        // Flagging marks other tabs dirty; the Trash tab reloads lazily when it
+        // becomes active (via `ensure_fresh`), then shows the flagged track.
         let trash = tab_index(&app, "Trash");
+        app.current_tab = trash;
+        app.ensure_fresh().await.unwrap();
         assert_eq!(app.tabs[trash].tracks.len(), 1);
     }
 
@@ -2407,9 +2739,7 @@ mod tests {
             .unwrap();
         }
 
-        let mut app = App::new(pool.clone(), None, Config::default())
-            .await
-            .unwrap();
+        let mut app = open_default(&pool).await;
         app.current_screen = app::Screens::Main;
         app.current_tab = tab_index(&app, "Duplicates");
 
@@ -2420,7 +2750,7 @@ mod tests {
 
         // Exactly one member (the non-keeper) is flagged, and the resolved
         // group drops off the list.
-        assert_eq!(db::count_marked(&pool).await.unwrap(), 1);
+        assert_eq!(db::count_marked(&pool, app.active_library_id()).await.unwrap(), 1);
         assert_eq!(app.duplicates.groups.len(), 0);
     }
 
@@ -2432,16 +2762,14 @@ mod tests {
             .await
             .unwrap();
 
-        let mut app = App::new(pool.clone(), None, Config::default())
-            .await
-            .unwrap();
+        let mut app = open_default(&pool).await;
         app.current_screen = app::Screens::Main;
         app.current_tab = tab_index(&app, "Trash");
         app.tabs[app.current_tab].state.select(Some(0));
 
-        assert_eq!(db::count_marked(&pool).await.unwrap(), 1);
+        assert_eq!(db::count_marked(&pool, app.active_library_id()).await.unwrap(), 1);
         handle_main_navigation(&mut app, press('r')).await;
-        assert_eq!(db::count_marked(&pool).await.unwrap(), 0);
+        assert_eq!(db::count_marked(&pool, app.active_library_id()).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -2454,19 +2782,17 @@ mod tests {
         .await
         .unwrap();
 
-        let mut app = App::new(pool.clone(), None, Config::default())
-            .await
-            .unwrap();
+        let mut app = open_default(&pool).await;
         app.current_screen = app::Screens::Main;
         app.current_tab = tab_index(&app, "Library");
         app.tabs[app.current_tab].state.select(Some(0));
 
         handle_main_navigation(&mut app, press('d')).await;
-        assert_eq!(db::count_marked(&pool).await.unwrap(), 1);
+        assert_eq!(db::count_marked(&pool, app.active_library_id()).await.unwrap(), 1);
 
         // Undo restores the flag.
         handle_main_navigation(&mut app, press('z')).await;
-        assert_eq!(db::count_marked(&pool).await.unwrap(), 0);
+        assert_eq!(db::count_marked(&pool, app.active_library_id()).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -2480,9 +2806,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let mut app = App::new(pool.clone(), None, Config::default())
-            .await
-            .unwrap();
+        let mut app = open_default(&pool).await;
         let i = tab_index(&app, "Library");
         app.tabs[i].sort = app::SortKey::Title;
         app.tabs[i].apply_sort();
@@ -2508,9 +2832,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mut app = App::new(pool.clone(), None, Config::default())
-            .await
-            .unwrap();
+        let mut app = open_default(&pool).await;
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
 
         // Start screen, then every main tab.
@@ -2551,9 +2873,50 @@ mod tests {
         app.scan_progress = Some((1, 2));
         term.draw(|f| draw(f, &mut app)).unwrap();
 
-        app.stats = Some(db::compute_stats(&pool).await.unwrap());
+        let lib_id = app.active_library_id();
+        app.stats = Some(db::compute_stats(&pool, lib_id).await.unwrap());
         app.current_screen = app::Screens::Stats;
         term.draw(|f| draw(f, &mut app)).unwrap();
+
+        // Library picker + create-library screens.
+        app.refresh_libraries().await.unwrap();
+        app.current_screen = app::Screens::Picker;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        app.current_screen = app::Screens::CreateLibrary;
+        app.new_lib_path = "/music/new".to_string();
+        app.new_lib_name = "New".to_string();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn libraries_scope_tracks() {
+        let pool = test_pool().await;
+        let a = db::create_library(&pool, "A", "/a").await.unwrap();
+        let b = db::create_library(&pool, "B", "/b").await.unwrap();
+        sqlx::query("INSERT INTO tracks (file_path, title, status, library_id) VALUES ('/a/x.flac','X','pending',?)")
+            .bind(a.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (file_path, title, status, library_id) VALUES ('/b/y.flac','Y','pending',?)")
+            .bind(b.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Each library sees only its own track — no cross-library bleed.
+        assert_eq!(db::count_tracks(&pool, None, a.id).await.unwrap(), 1);
+        assert_eq!(db::count_tracks(&pool, None, b.id).await.unwrap(), 1);
+        let a_tracks = db::load_tracks(&pool, None, None, None, a.id).await.unwrap();
+        assert_eq!(a_tracks.len(), 1);
+        assert_eq!(a_tracks[0].title.as_deref(), Some("X"));
+
+        // Opening switches the active library and re-hydrates the Library tab.
+        let mut app = App::new(pool.clone(), Config::default()).await.unwrap();
+        app.open_library(b.clone()).await.unwrap();
+        let lib_tab = tab_index(&app, "Library");
+        assert_eq!(app.tabs[lib_tab].tracks.len(), 1);
+        assert_eq!(app.tabs[lib_tab].tracks[0].title.as_deref(), Some("Y"));
     }
 
     #[tokio::test]
@@ -2567,11 +2930,18 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let stats = db::compute_stats(&pool).await.unwrap();
+        db::ensure_default_library(&pool, None).await.unwrap();
+        let lib = db::list_libraries(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let stats = db::compute_stats(&pool, lib.id).await.unwrap();
         assert_eq!(stats.total_tracks, 2);
         assert_eq!(stats.lossless, 2);
 
-        let tracks = db::load_tracks(&pool, None, None, None).await.unwrap();
+        let tracks = db::load_tracks(&pool, None, None, None, lib.id).await.unwrap();
         let path = std::env::temp_dir().join(format!("preamble-test-{}.csv", std::process::id()));
         crate::export::export_csv(&tracks, &path).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();

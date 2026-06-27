@@ -41,27 +41,33 @@ pub fn collect_new_paths(
 
 pub async fn scan_library(
     pool: SqlitePool,
+    library_id: i64,
     path: PathBuf,
     formats: Vec<String>,
     concurrency: usize,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     scan_sender: tokio::sync::mpsc::Sender<ScanEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut tx = pool.clone().begin().await?;
+    // Inserts are committed in batches of this size rather than in one tx held
+    // open for the whole scan. Committing periodically keeps progress durable,
+    // releases the write lock so the UI (WAL reads) stays responsive, and means
+    // a cancel keeps the batches already committed.
+    const COMMIT_BATCH: usize = 500;
+    let mut tx = pool.begin().await?;
 
     // Bound concurrent tag-reads/hashes; tuned via config (default 8).
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
 
     let formats: HashSet<String> = formats.into_iter().collect();
 
-    // loads existing track paths into a HashSet for fast lookup
-    let existing_tracks = db::load_existing_paths(&pool).await?;
+    // loads existing track paths into a HashSet for fast lookup (this library only)
+    let existing_tracks = db::load_existing_paths(&pool, library_id).await?;
 
-    // loads existing track isrcs from all tracks in DB
-    let existing_isrcs = db::load_existing_isrcs(&pool).await?;
+    // loads existing track isrcs from this library's tracks
+    let existing_isrcs = db::load_existing_isrcs(&pool, library_id).await?;
 
-    // loads exsiting track hashes from all tracks in DB
-    let existing_hashes = db::load_existing_hashes(&pool).await?;
+    // loads exsiting track hashes from this library's tracks
+    let existing_hashes = db::load_existing_hashes(&pool, library_id).await?;
 
     // fills a Vec of all new track paths, as compared to the HashSet
     let mut new_track_paths: Vec<PathBuf> = Vec::new();
@@ -114,15 +120,23 @@ pub async fn scan_library(
                         track.isrc.as_deref().map(|i| seen_isrcs.insert(i.to_string()));
                         track.file_hash.as_deref().map(|h| seen_hashes.insert(h.to_string()));
                     }
-                    db::insert_track(&mut tx, &track).await?;
+                    db::insert_track(&mut tx, &track, library_id).await?;
                     processed += 1;
                     scan_sender.try_send(ScanEvent::Progress(processed, total)).ok();
+
+                    // Commit periodically so the write lock is released and the
+                    // rows so far become durable/visible, then open a fresh tx.
+                    if processed.is_multiple_of(COMMIT_BATCH) {
+                        tx.commit().await?;
+                        tx = pool.begin().await?;
+                    }
                 }
                 Ok(Err(e)) => tracing::warn!(error = %e, "failed to read tags"),
                 Err(e) => tracing::error!(error = %e, "tag-read task panicked"),
             }
         }
-        
+
+        // Commit whatever is left in the final (partial) batch.
         tx.commit().await?;
         // eprintln!("AFTER SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
     }
@@ -173,13 +187,15 @@ fn classify_health(
 /// Re-hashes files, so it is intentionally an explicit, cancellable operation.
 pub async fn health_check(
     pool: SqlitePool,
+    library_id: i64,
     low_bitrate_threshold: u32,
+    concurrency: usize,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     scan_sender: tokio::sync::mpsc::Sender<ScanEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let tracks = db::load_tracks(&pool, None, None, None).await?;
+    let tracks = db::load_tracks(&pool, None, None, None, library_id).await?;
     let total = tracks.len();
-    let semaphore = Arc::new(Semaphore::new(16));
+    let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut tasks = FuturesUnordered::new();
 
     for t in tracks {
@@ -220,11 +236,12 @@ pub async fn health_check(
 /// keeping DB metadata in sync with on-disk edits.
 pub async fn rescan_changed(
     pool: SqlitePool,
+    library_id: i64,
     concurrency: usize,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     scan_sender: tokio::sync::mpsc::Sender<ScanEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let candidates = db::tracks_for_rescan(&pool).await?;
+    let candidates = db::tracks_for_rescan(&pool, library_id).await?;
     let total = candidates.len();
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut tasks = FuturesUnordered::new();
@@ -301,10 +318,10 @@ pub enum ValidateEvent {
     Error(String),
 }
 
-pub async fn validate_paths(pool: SqlitePool, scan_sender: tokio::sync::oneshot::Sender<ValidateEvent>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let paths_to_check = db::load_tracks_paths(&pool).await?;
+pub async fn validate_paths(pool: SqlitePool, library_id: i64, concurrency: usize, scan_sender: tokio::sync::oneshot::Sender<ValidateEvent>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let paths_to_check = db::load_tracks_paths(&pool, library_id).await?;
 
-    let semaphore = Arc::new(Semaphore::new(32));
+    let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut tasks = FuturesUnordered::new();
 
     for (id, path) in paths_to_check {

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE tracks SET library_id = ? WHERE library_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6fbd544d079304770490c778c1d8f4a685b41170204cfcacb2ec7ffd09d95ccc"
+}

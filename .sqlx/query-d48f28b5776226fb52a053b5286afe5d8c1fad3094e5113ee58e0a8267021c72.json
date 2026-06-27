@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        INSERT INTO tracks (\n        file_path,\n        title,\n        artist,\n        album,\n        album_artist,\n        album_artists,\n        composer,\n        label,\n        genre,\n        comment,\n        lyrics,\n        track,\n        track_total,\n        disc,\n        disc_total,\n        release_year,\n        recording_date,\n        original_release_date,\n        release_type,\n        compilation,\n        isrc,\n        barcode,\n        catalog_number,\n        bpm,\n        language,\n        script,\n        mood,\n        replay_gain_track_gain,\n        replay_gain_track_peak,\n        replay_gain_album_gain,\n        replay_gain_album_peak,\n        file_format,\n        file_size,\n        duration,\n        bitrate,\n        sample_rate,\n        bit_depth,\n        channels,\n        acoustid,\n        musicbrainz_recording_id,\n        musicbrainz_track_id,\n        musicbrainz_release_id,\n        musicbrainz_release_group_id,\n        musicbrainz_artist_id,\n        musicbrainz_release_artist_id,\n        musicbrainz_work_id,\n        status,\n        file_hash,\n        library_id\n    ) VALUES (\n        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,\n        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,\n        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,\n        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,\n        ?, ?, ?, ?, ?, ?, ?, ?, ?\n    )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 49
+    },
+    "nullable": []
+  },
+  "hash": "d48f28b5776226fb52a053b5286afe5d8c1fad3094e5113ee58e0a8267021c72"
+}

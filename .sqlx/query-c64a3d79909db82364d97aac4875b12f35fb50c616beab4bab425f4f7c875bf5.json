@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT status AS \"s!: String\", COUNT(*) AS \"n!: i64\"\n        FROM tracks WHERE library_id = ? GROUP BY status ORDER BY 2 DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "s!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "c64a3d79909db82364d97aac4875b12f35fb50c616beab4bab425f4f7c875bf5"
+}

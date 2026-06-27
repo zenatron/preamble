@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(file_format, '?') AS \"fmt!: String\", COUNT(*) AS \"n!: i64\",\n        COALESCE(SUM(file_size), 0) AS \"size!: i64\"\n        FROM tracks WHERE library_id = ? GROUP BY file_format ORDER BY 2 DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "fmt!: String",
+        "ordinal": 0,
+        "type_info": "Null"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      },
+      {
+        "name": "size!: i64",
+        "ordinal": 2,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f8d5443e5cd98e4361e364ce0b0b212d4bad235ba4c0c04819d9c9ae82bdb6c3"
+}

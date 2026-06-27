@@ -11,6 +11,18 @@ pub struct App {
     pub pool: SqlitePool,
     pub config: Config,
 
+    /// The currently open library. `None` only before one is opened (picker /
+    /// create screens). Every per-track query scopes to its id.
+    pub active_library: Option<db::Library>,
+    /// Libraries listed in the picker (most-recently-opened first).
+    pub libraries: Vec<db::Library>,
+    /// Highlighted picker row; index `libraries.len()` is the "Create new…" row.
+    pub picker_index: usize,
+    /// In-progress "create library" form (path + name + focused field).
+    pub new_lib_path: String,
+    pub new_lib_name: String,
+    pub new_lib_focus: NewLibField,
+
     pub pending_scan_path: Option<std::path::PathBuf>,
     pub status_message: Option<StatusMessage>,
 
@@ -48,6 +60,9 @@ pub struct App {
     pub tabs: Vec<TabData>,
 
     pub duplicates: DuplicatesView,
+    /// Set when a mutation may have changed the duplicate groups; the view is
+    /// reloaded lazily the next time the Duplicates tab is shown.
+    pub duplicates_dirty: bool,
 
     // properties panel
     pub properties_panel_open: bool,
@@ -90,23 +105,30 @@ pub struct App {
     pub current_tab: usize,
     pub should_quit: bool,
     pub quit_confirmed: bool,
+
+    /// Set whenever something on screen may have changed. The event loop only
+    /// repaints when this is set (or an operation is animating)
+    pub needs_redraw: bool,
 }
 
 impl App {
-    pub async fn new(
-        pool: SqlitePool,
-        pending_scan_path: Option<std::path::PathBuf>,
-        config: Config,
-    ) -> Result<Self, sqlx::Error> {
-        // The user can manually refetch the tracks on hand
-
-        let duplicates = DuplicatesView::new(&pool).await?;
-
+    /// Builds the app shell without an open library. Tabs start empty; call
+    /// [`App::open_library`] to hydrate them for a specific library. Keeping
+    /// construction library-agnostic lets the picker / create flows and the
+    /// in-session `L` switch all funnel through one re-hydration path.
+    pub async fn new(pool: SqlitePool, config: Config) -> Result<Self, sqlx::Error> {
         Ok(Self {
             pool: pool.clone(),
             config,
 
-            pending_scan_path,
+            active_library: None,
+            libraries: Vec::new(),
+            picker_index: 0,
+            new_lib_path: String::new(),
+            new_lib_name: String::new(),
+            new_lib_focus: NewLibField::Path,
+
+            pending_scan_path: None,
             status_message: None,
 
             scan_progress: None,
@@ -134,48 +156,30 @@ impl App {
 
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
 
-            // pull stats from DB on startup
+            // Zeroed until a library is opened (see `open_library`).
             library_stats: LibraryStats {
-                total_tracks: db::count_tracks(&pool, None).await? as u32,
-                total_pending: db::count_tracks(&pool, Some("pending")).await? as u32,
-                total_duplicates: duplicates.groups.len() as u32,
-                total_missing: db::count_tracks(&pool, Some("missing")).await? as u32,
-                total_marked: db::count_marked(&pool).await? as u32,
+                total_tracks: 0,
+                total_pending: 0,
+                total_duplicates: 0,
+                total_missing: 0,
+                total_marked: 0,
             },
 
+            // Tab scaffolding; rows are loaded by `open_library`.
             tabs: vec![
-                TabData::new(
-                    "Library",
-                    TabSource::Status(None),
-                    db::load_tracks(&pool, None, None, None).await?,
-                ),
-                TabData::new(
-                    "Enrichment",
-                    TabSource::Status(Some("pending")),
-                    db::load_tracks(&pool, None, Some("pending"), None).await?,
-                ),
+                TabData::new("Library", TabSource::Status(None), Vec::new()),
+                TabData::new("Enrichment", TabSource::Status(Some("pending")), Vec::new()),
                 // Duplicates is rendered specially, not from `tracks`.
                 TabData::new("Duplicates", TabSource::Status(None), Vec::new()),
                 // Failed - enrichment dead letters, with a retry action.
-                TabData::new(
-                    "Failed",
-                    TabSource::DeadLetter,
-                    db::load_dead_letter(&pool).await?,
-                ),
-                TabData::new(
-                    "Missing",
-                    TabSource::Status(Some("missing")),
-                    db::load_tracks(&pool, None, Some("missing"), None).await?,
-                ),
+                TabData::new("Failed", TabSource::DeadLetter, Vec::new()),
+                TabData::new("Missing", TabSource::Status(Some("missing")), Vec::new()),
                 // Trash - everything flagged for deletion, awaiting purge.
-                TabData::new(
-                    "Trash",
-                    TabSource::Marked,
-                    db::load_marked_tracks(&pool).await?,
-                ),
+                TabData::new("Trash", TabSource::Marked, Vec::new()),
             ],
 
-            duplicates,
+            duplicates: DuplicatesView::empty(),
+            duplicates_dirty: false,
 
             // properties panel
             properties_panel_open: false,
@@ -189,7 +193,7 @@ impl App {
             export_mode: false,
 
             filter_mode: false,
-            formats_in_library: db::distinct_formats(&pool).await?,
+            formats_in_library: Vec::new(),
 
             help_open: false,
 
@@ -208,7 +212,75 @@ impl App {
             current_tab: 0,
             should_quit: false,
             quit_confirmed: false,
+
+            needs_redraw: true,
         })
+    }
+
+    /// Id of the active library, or 0 when none is open. Scoped queries with id
+    /// 0 return nothing, so callers stay safe before a library is opened.
+    pub fn active_library_id(&self) -> i64 {
+        self.active_library.as_ref().map(|l| l.id).unwrap_or(0)
+    }
+
+    /// Opens `lib`: records it active, hydrates every tab + counts + duplicates +
+    /// formats for it, resets transient view state, and lands on the Start
+    /// screen. The single re-hydration entry point shared by the picker, the
+    /// CLI-path open, and the in-session `L` switch.
+    pub async fn open_library(&mut self, lib: db::Library) -> Result<(), sqlx::Error> {
+        db::touch_library(&self.pool, lib.id).await.ok();
+        self.pending_scan_path = Some(std::path::PathBuf::from(&lib.path));
+        self.active_library = Some(lib);
+        let library_id = self.active_library_id();
+
+        // Reset per-tab view state so a switch doesn't carry over search/filters.
+        self.current_tab = 0;
+        for tab in &mut self.tabs {
+            tab.search_query.clear();
+            tab.filter.clear();
+            tab.dirty = false;
+        }
+        self.search_mode = false;
+        self.search_dirty = false;
+        self.group_mode = GroupMode::Off;
+        self.groups.clear();
+
+        let pool = self.pool.clone();
+        for tab in &mut self.tabs {
+            // Duplicates is rendered from `self.duplicates`, not its tab rows.
+            if tab.label != "Duplicates" {
+                reload_tab(&pool, tab, library_id).await?;
+            }
+        }
+        self.duplicates = DuplicatesView::new(&self.pool, library_id).await?;
+        self.duplicates_dirty = false;
+        self.formats_in_library = db::distinct_formats(&self.pool, library_id).await?;
+        self.refresh_counts().await?;
+
+        self.properties_panel_open = false;
+        self.properties_of_track = None;
+        self.properties_scroll = 0;
+        self.current_screen = Screens::Start;
+        self.needs_redraw = true;
+        Ok(())
+    }
+
+    /// Reloads the library list (for the picker) and clamps the selection.
+    pub async fn refresh_libraries(&mut self) -> Result<(), sqlx::Error> {
+        self.libraries = db::list_libraries(&self.pool).await?;
+        if self.picker_index > self.libraries.len() {
+            self.picker_index = self.libraries.len();
+        }
+        Ok(())
+    }
+
+    /// True while a long-running operation is animating (progress gauge /
+    /// spinner), so the loop should keep repainting even without input.
+    pub fn is_busy(&self) -> bool {
+        self.scan_receiver.is_some()
+            || self.validating_receiver.is_some()
+            || self.enrich_receiver.is_some()
+            || self.watch_scan_active
     }
 
     /// Sets the transient bottom-bar status message and mirrors it to the log.
@@ -224,6 +296,7 @@ impl App {
             level,
             at: std::time::Instant::now(),
         });
+        self.needs_redraw = true;
     }
 
     pub fn current_tab_mut(&mut self) -> &mut TabData {
@@ -306,6 +379,7 @@ impl App {
                 let cancel = self.cancel.clone();
                 tokio::spawn(scan_library(
                     self.pool.clone(),
+                    self.active_library_id(),
                     path,
                     self.config.formats.clone(),
                     self.config.scan_concurrency,
@@ -321,7 +395,7 @@ impl App {
         self.groups = if self.group_mode == GroupMode::Off {
             Vec::new()
         } else {
-            db::load_groups(&self.pool, self.group_mode).await?
+            db::load_groups(&self.pool, self.group_mode, self.active_library_id()).await?
         };
         self.groups_state
             .select((!self.groups.is_empty()).then_some(0));
@@ -331,7 +405,8 @@ impl App {
     /// Reloads just the active tab (after a search/filter/sort change).
     pub async fn reload_current_tab(&mut self) -> Result<(), sqlx::Error> {
         let pool = self.pool.clone();
-        reload_tab(&pool, &mut self.tabs[self.current_tab]).await
+        let library_id = self.active_library_id();
+        reload_tab(&pool, &mut self.tabs[self.current_tab], library_id).await
     }
 
     /// Debounced search: re-runs the active tab's query a short moment after the
@@ -342,6 +417,7 @@ impl App {
         {
             self.search_dirty = false;
             self.reload_current_tab().await.ok();
+            self.needs_redraw = true;
         }
     }
 
@@ -350,69 +426,101 @@ impl App {
         if let Some(msg) = &self.status_message {
             if msg.at.elapsed() > std::time::Duration::from_secs(6) {
                 self.status_message = None;
+                // Repaint once to actually erase the message from the screen.
+                self.needs_redraw = true;
             }
         }
     }
 
-    pub async fn reload(&mut self) -> Result<(), sqlx::Error> {
-        self.duplicates.reload(&self.pool).await?;
-        self.library_stats.total_tracks = db::count_tracks(&self.pool, None).await? as u32;
+    /// Refreshes just the summary counts shown in the tab badges. Cheap (a
+    /// handful of COUNT queries), so it runs on every mutation even though the
+    /// row data is reloaded lazily.
+    pub async fn refresh_counts(&mut self) -> Result<(), sqlx::Error> {
+        let lib = self.active_library_id();
+        self.library_stats.total_tracks = db::count_tracks(&self.pool, None, lib).await? as u32;
         self.library_stats.total_pending =
-            db::count_tracks(&self.pool, Some("pending")).await? as u32;
-        self.library_stats.total_duplicates = self.duplicates.groups.len() as u32;
+            db::count_tracks(&self.pool, Some("pending"), lib).await? as u32;
+        self.library_stats.total_duplicates =
+            db::count_duplicate_groups(&self.pool, lib).await? as u32;
         self.library_stats.total_missing =
-            db::count_tracks(&self.pool, Some("missing")).await? as u32;
-        self.library_stats.total_marked = db::count_marked(&self.pool).await? as u32;
+            db::count_tracks(&self.pool, Some("missing"), lib).await? as u32;
+        self.library_stats.total_marked = db::count_marked(&self.pool, lib).await? as u32;
+        Ok(())
+    }
+
+    /// True when the active tab is the specially-rendered Duplicates tab.
+    fn on_duplicates_tab(&self) -> bool {
+        self.tabs[self.current_tab].label == "Duplicates"
+    }
+
+    /// Applies a mutation's effects: refreshes counts, reloads the *visible* tab
+    /// (and the Duplicates view if it's showing) right away, and marks every
+    /// other tab dirty so it reloads the next time it's shown. This replaces the
+    /// old behavior of eagerly re-querying all six tabs on every change.
+    pub async fn reload(&mut self) -> Result<(), sqlx::Error> {
+        self.refresh_counts().await?;
 
         let pool = self.pool.clone();
-        for tab in &mut self.tabs {
-            reload_tab(&pool, tab).await?;
+        let library_id = self.active_library_id();
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            if i == self.current_tab {
+                reload_tab(&pool, tab, library_id).await?;
+                tab.dirty = false;
+            } else {
+                tab.dirty = true;
+            }
+        }
+
+        if self.on_duplicates_tab() {
+            self.duplicates.reload(&self.pool, library_id).await?;
+            self.duplicates_dirty = false;
+        } else {
+            self.duplicates_dirty = true;
         }
 
         self.properties_panel_open = false;
         self.properties_of_track = None;
         self.properties_scroll = 0;
+        self.needs_redraw = true;
 
+        Ok(())
+    }
+
+    /// Reloads the active tab (and Duplicates view) if a prior mutation marked it
+    /// dirty. Called once per event-loop iteration so a tab switch picks up any
+    /// pending changes before the next draw.
+    pub async fn ensure_fresh(&mut self) -> Result<(), sqlx::Error> {
+        if self.tabs[self.current_tab].dirty {
+            self.reload_current_tab().await?;
+            self.tabs[self.current_tab].dirty = false;
+            self.needs_redraw = true;
+        }
+        if self.on_duplicates_tab() && self.duplicates_dirty {
+            self.duplicates
+                .reload(&self.pool, self.active_library_id())
+                .await?;
+            self.duplicates_dirty = false;
+            self.needs_redraw = true;
+        }
         Ok(())
     }
 }
 
-/// True if the track matches a free-text query across title/artist/album.
-fn matches_query(t: &TrackSummary, query_lower: &str) -> bool {
-    let hit = |f: &Option<String>| {
-        f.as_deref()
-            .map(|v| v.to_lowercase().contains(query_lower))
-            .unwrap_or(false)
-    };
-    hit(&t.title) || hit(&t.artist) || hit(&t.album)
-}
-
 /// Loads a tab's tracks honoring its base status filter, remembered search
 /// query, facet filters, and sort order, then clamps the selection.
-pub async fn reload_tab(pool: &SqlitePool, tab: &mut TabData) -> Result<(), sqlx::Error> {
+pub async fn reload_tab(
+    pool: &SqlitePool,
+    tab: &mut TabData,
+    library_id: i64,
+) -> Result<(), sqlx::Error> {
     let query = (!tab.search_query.is_empty()).then(|| tab.search_query.clone());
 
     let mut tracks = match tab.source {
         TabSource::Status(status_filter) => {
-            db::load_tracks(pool, None, status_filter, query.as_deref()).await?
+            db::load_tracks(pool, None, status_filter, query.as_deref(), library_id).await?
         }
-        TabSource::Marked => {
-            let mut t = db::load_marked_tracks(pool).await?;
-            // These loaders have no SQL search arm, so filter in memory.
-            if let Some(q) = &query {
-                let ql = q.to_lowercase();
-                t.retain(|track| matches_query(track, &ql));
-            }
-            t
-        }
-        TabSource::DeadLetter => {
-            let mut t = db::load_dead_letter(pool).await?;
-            if let Some(q) = &query {
-                let ql = q.to_lowercase();
-                t.retain(|track| matches_query(track, &ql));
-            }
-            t
-        }
+        TabSource::Marked => db::load_marked_tracks(pool, query.as_deref(), library_id).await?,
+        TabSource::DeadLetter => db::load_dead_letter(pool, query.as_deref(), library_id).await?,
     };
 
     if tab.filter.is_active() {
@@ -453,6 +561,9 @@ pub struct TabData {
     pub filter: Filter,
     /// Remembered search query for this tab.
     pub search_query: String,
+    /// When true, this tab's rows are stale and will be reloaded the next time
+    /// it becomes the active tab (see `App::ensure_fresh`).
+    pub dirty: bool,
 }
 
 impl TabData {
@@ -466,6 +577,7 @@ impl TabData {
             sort_desc: false,
             filter: Filter::default(),
             search_query: String::new(),
+            dirty: false,
         }
     }
 
@@ -629,10 +741,21 @@ pub struct LibraryStats {
 }
 
 pub enum Screens {
+    /// Choose an existing library or create a new one (no library open yet).
+    Picker,
+    /// Enter a path + name for a new library.
+    CreateLibrary,
     Start,
     Main,
     Scanning,
     Stats,
+}
+
+/// Which field the create-library form is editing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NewLibField {
+    Path,
+    Name,
 }
 
 #[derive(Clone, Copy)]
@@ -762,6 +885,8 @@ pub struct DuplicatesView {
     pub selected_member: usize,
     pub focus: DuplicatePane,
     pub column_offset: usize,
+    /// Library these groups belong to, so member loads stay scoped.
+    pub library_id: i64,
 }
 
 pub enum DuplicatePane {
@@ -770,13 +895,27 @@ pub enum DuplicatePane {
 }
 
 impl DuplicatesView {
-    pub async fn new(pool: &SqlitePool) -> Result<Self, sqlx::Error> {
-        let groups = db::load_duplicate_groups(pool).await?;
+    /// An empty view used before any library is opened.
+    pub fn empty() -> Self {
+        Self {
+            groups: Vec::new(),
+            groups_state: TableState::default(),
+            selected_members: Vec::new(),
+            selected_member: 0,
+            focus: DuplicatePane::Groups,
+            column_offset: 0,
+            library_id: 0,
+        }
+    }
+
+    pub async fn new(pool: &SqlitePool, library_id: i64) -> Result<Self, sqlx::Error> {
+        let groups = db::load_duplicate_groups(pool, library_id).await?;
         let mut groups_state = TableState::default();
         let mut selected_member = 0;
         let selected_members = if !groups.is_empty() {
             groups_state.select(Some(0));
-            let members = db::load_duplicate_members(pool, groups[0].kind, &groups[0].key).await?;
+            let members =
+                db::load_duplicate_members(pool, groups[0].kind, &groups[0].key, library_id).await?;
             selected_member = suggest_keeper(&members).unwrap_or(0);
             members
         } else {
@@ -789,10 +928,11 @@ impl DuplicatesView {
             selected_member,
             focus: DuplicatePane::Groups,
             column_offset: 0,
+            library_id,
         })
     }
-    pub async fn reload(&mut self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        *self = Self::new(pool).await?;
+    pub async fn reload(&mut self, pool: &SqlitePool, library_id: i64) -> Result<(), sqlx::Error> {
+        *self = Self::new(pool, library_id).await?;
         Ok(())
     }
 
@@ -801,8 +941,13 @@ impl DuplicatesView {
             return Ok(());
         }
         self.groups_state.select(Some(idx));
-        self.selected_members =
-            db::load_duplicate_members(pool, self.groups[idx].kind, &self.groups[idx].key).await?;
+        self.selected_members = db::load_duplicate_members(
+            pool,
+            self.groups[idx].kind,
+            &self.groups[idx].key,
+            self.library_id,
+        )
+        .await?;
         // Pre-highlight the suggested keeper so the user can accept or override.
         self.selected_member = suggest_keeper(&self.selected_members).unwrap_or(0);
         self.column_offset = 0;

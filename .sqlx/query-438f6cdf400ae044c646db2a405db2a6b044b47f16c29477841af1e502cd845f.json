@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) FROM (\n            SELECT isrc FROM tracks\n            WHERE library_id = ? AND isrc IS NOT NULL AND isrc != '' AND marked_for_deletion = 0\n            GROUP BY isrc\n            HAVING COUNT(*) > 1\n                AND COUNT(DISTINCT COALESCE(file_hash, CAST(id AS TEXT))) > 1\n        )",
+  "describe": {
+    "columns": [
+      {
+        "name": "COUNT(*)",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "438f6cdf400ae044c646db2a405db2a6b044b47f16c29477841af1e502cd845f"
+}

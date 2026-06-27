@@ -27,17 +27,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _log_guard = config::init_logging(&config);
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "preamble starting");
 
-    // A path given on the CLI overrides the configured default library path.
-    let path: Option<PathBuf> = args
-        .get(1)
-        .map(PathBuf::from)
-        .or_else(|| config.library_path.clone());
-
     let pool = db::init_db().await?;
 
-    let app = App::new(pool, path, config).await?;
+    // Migrate any pre-multi-library rows into a default library before anything
+    // queries by library_id.
+    db::ensure_default_library(&pool, config.library_path.as_deref()).await?;
+
+    // A path on the CLI selects (or creates) a library directly; otherwise we
+    // show the picker. The config's library_path only seeds the default
+    // library's name during the one-time backfill above.
+    let cli_path: Option<PathBuf> = args.get(1).map(PathBuf::from);
+
+    let mut app = App::new(pool, config).await?;
+    resolve_startup(&mut app, cli_path).await?;
     run_app(app).await?;
 
+    Ok(())
+}
+
+/// Decides which screen the app opens on: an existing library (CLI path matches),
+/// the create form (CLI path is new, or there are no libraries yet), or the
+/// picker (no path given but libraries exist).
+async fn resolve_startup(
+    app: &mut App,
+    cli_path: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match cli_path {
+        Some(p) => {
+            let path_str = p.to_string_lossy().into_owned();
+            match db::find_library_by_path(&app.pool, &path_str).await? {
+                Some(lib) => app.open_library(lib).await?,
+                None => {
+                    // Unknown path: pre-fill the create form and let the user
+                    // confirm a name.
+                    app.new_lib_name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    app.new_lib_path = path_str;
+                    app.new_lib_focus = crate::app::NewLibField::Name;
+                    app.current_screen = crate::app::Screens::CreateLibrary;
+                }
+            }
+        }
+        None => {
+            app.refresh_libraries().await?;
+            app.current_screen = if app.libraries.is_empty() {
+                crate::app::Screens::CreateLibrary
+            } else {
+                crate::app::Screens::Picker
+            };
+        }
+    }
     Ok(())
 }
 
@@ -61,15 +102,18 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error + Sen
         }
     }
 
-    // Start the filesystem watcher if enabled in config.
-    if app.config.watch {
+    // Start the filesystem watcher if enabled in config and a library is open.
+    if app.config.watch && app.active_library.is_some() {
         app.toggle_watch();
     }
 
     loop {
-        term.draw(|f| ui::draw(f, &mut app))?;
-
-        app.spinner_tick = app.spinner_tick.wrapping_add(1);
+        // While an operation animates (gauge/spinner) keep advancing the tick
+        // and repainting; otherwise only repaint when something changed.
+        if app.is_busy() {
+            app.spinner_tick = app.spinner_tick.wrapping_add(1);
+            app.needs_redraw = true;
+        }
         app.expire_status();
 
         if let Some(ref mut rx) = app.scan_receiver {
@@ -114,7 +158,15 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error + Sen
         app.commit_search_if_due().await;
         app.tick_watch().await;
 
+        // Drains input (sets needs_redraw on any event) then applies any pending
+        // lazy tab reload before we decide whether to paint.
         ui::poll_events(&mut app).await?;
+        app.ensure_fresh().await?;
+
+        if app.needs_redraw {
+            term.draw(|f| ui::draw(f, &mut app))?;
+            app.needs_redraw = false;
+        }
 
         if app.quit_confirmed {
             break;

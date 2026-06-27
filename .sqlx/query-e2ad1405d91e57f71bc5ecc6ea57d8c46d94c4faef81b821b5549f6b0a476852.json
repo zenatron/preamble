@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO libraries (name, path) VALUES (?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "e2ad1405d91e57f71bc5ecc6ea57d8c46d94c4faef81b821b5549f6b0a476852"
+}

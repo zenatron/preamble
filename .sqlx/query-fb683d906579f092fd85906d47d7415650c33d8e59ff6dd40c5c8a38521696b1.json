@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", file_path,\n        CAST(COALESCE(strftime('%s', last_scanned_at), '0') AS INTEGER) AS \"last_scanned!: i64\"\n        FROM tracks WHERE library_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "file_path",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_scanned!: i64",
+        "ordinal": 2,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "fb683d906579f092fd85906d47d7415650c33d8e59ff6dd40c5c8a38521696b1"
+}

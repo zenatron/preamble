@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(artist, '(unknown)') AS \"name!: String\", COUNT(*) AS \"n!: i64\"\n        FROM tracks WHERE library_id = ? GROUP BY artist ORDER BY 2 DESC LIMIT 12",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!: String",
+        "ordinal": 0,
+        "type_info": "Null"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "d1d42b45a326cbeea4f62cb41c700edf2704597042caf6a30a48e4aa425b874a"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT ((release_year / 10) * 10) AS \"decade!: i64\", COUNT(*) AS \"n!: i64\"\n        FROM tracks WHERE library_id = ? AND release_year IS NOT NULL\n        GROUP BY 1 ORDER BY 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "decade!: i64",
+        "ordinal": 0,
+        "type_info": "Null"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "b0a398d9461e13320d97c4bb8a027cfaf9d7e44f0ba4e91f2cdef44a8105a699"
+}

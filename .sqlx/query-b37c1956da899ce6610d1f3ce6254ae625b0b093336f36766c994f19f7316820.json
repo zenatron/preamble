@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(artist, '(unknown)') AS \"name!: String\",\n                COUNT(*) AS \"count!: i64\",\n                COALESCE(SUM(file_size), 0) AS \"total_size!: i64\",\n                COALESCE(SUM(duration), 0) AS \"total_duration!: i64\"\n                FROM tracks WHERE library_id = ? GROUP BY artist ORDER BY 2 DESC, 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!: String",
+        "ordinal": 0,
+        "type_info": "Null"
+      },
+      {
+        "name": "count!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      },
+      {
+        "name": "total_size!: i64",
+        "ordinal": 2,
+        "type_info": "Null"
+      },
+      {
+        "name": "total_duration!: i64",
+        "ordinal": 3,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b37c1956da899ce6610d1f3ce6254ae625b0b093336f36766c994f19f7316820"
+}

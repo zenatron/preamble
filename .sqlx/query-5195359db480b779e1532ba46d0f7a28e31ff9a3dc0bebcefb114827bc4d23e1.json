@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT isrc FROM tracks WHERE library_id = ? AND isrc IS NOT NULL AND isrc != ''",
+  "describe": {
+    "columns": [
+      {
+        "name": "isrc",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "5195359db480b779e1532ba46d0f7a28e31ff9a3dc0bebcefb114827bc4d23e1"
+}

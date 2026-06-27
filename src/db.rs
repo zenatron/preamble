@@ -3,19 +3,165 @@
 
 use crate::track::{DuplicateGroupSummary, DuplicateKind, TrackInfo, TrackSummary};
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use std::time::Duration;
 use std::{collections::HashSet, path::PathBuf};
 
 /// initializes the Sqlite Pool
+///
+/// WAL journaling lets the UI keep reading while a scan/watch import holds a
+/// write transaction (the default rollback journal would block readers).
+/// `synchronous = NORMAL` is the safe pairing for WAL, and a busy timeout lets
+/// the pool wait out a momentary writer lock instead of erroring with
+/// "database is locked".
 pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
-    let pool = sqlx::SqlitePool::connect("sqlite://library.db?mode=rwc").await?;
+    let options = SqliteConnectOptions::new()
+        .filename("library.db")
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5))
+        .foreign_keys(true);
+
+    let pool = SqlitePoolOptions::new().connect_with(options).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }
 
+// Library registry
+//
+// Every track belongs to exactly one library (`tracks.library_id`). A library is
+// a named, path-pinned collection; all libraries share this one database and all
+// per-track queries scope to the active library's id.
+
+/// A named, path-pinned music collection.
+#[derive(Clone, Debug)]
+pub struct Library {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+}
+
+/// Lists known libraries, most-recently-opened first (NULLs last), then by name.
+pub async fn list_libraries(pool: &SqlitePool) -> Result<Vec<Library>, sqlx::Error> {
+    Ok(sqlx::query!(
+        r#"SELECT id AS "id!", name, path FROM libraries
+        ORDER BY last_opened_at DESC, name"#
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| Library {
+        id: r.id,
+        name: r.name,
+        path: r.path,
+    })
+    .collect())
+}
+
+/// Looks up a library by its filesystem root path.
+pub async fn find_library_by_path(
+    pool: &SqlitePool,
+    path: &str,
+) -> Result<Option<Library>, sqlx::Error> {
+    Ok(sqlx::query!(
+        r#"SELECT id AS "id!", name, path FROM libraries WHERE path = ?"#,
+        path
+    )
+    .fetch_optional(pool)
+    .await?
+    .map(|r| Library {
+        id: r.id,
+        name: r.name,
+        path: r.path,
+    }))
+}
+
+/// Creates a new library row and returns it (with its assigned id).
+pub async fn create_library(
+    pool: &SqlitePool,
+    name: &str,
+    path: &str,
+) -> Result<Library, sqlx::Error> {
+    let id = sqlx::query!(
+        r#"INSERT INTO libraries (name, path) VALUES (?, ?)"#,
+        name,
+        path
+    )
+    .execute(pool)
+    .await?
+    .last_insert_rowid();
+    Ok(Library {
+        id,
+        name: name.to_string(),
+        path: path.to_string(),
+    })
+}
+
+/// Records that a library was just opened (drives the recency ordering).
+pub async fn touch_library(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"UPDATE libraries SET last_opened_at = CURRENT_TIMESTAMP WHERE id = ?"#,
+        id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// One-time backfill for databases that predate multi-library support: assigns
+/// every orphaned track (`library_id IS NULL`) to a default library. The default
+/// is named/pathed from the running config when available so the migrated data
+/// keeps a sensible home. No-op once every track has a library.
+pub async fn ensure_default_library(
+    pool: &SqlitePool,
+    config_path: Option<&std::path::Path>,
+) -> Result<(), sqlx::Error> {
+    let orphans: i64 = sqlx::query_scalar!(r#"SELECT COUNT(*) FROM tracks WHERE library_id IS NULL"#)
+        .fetch_one(pool)
+        .await?;
+    if orphans == 0 {
+        return Ok(());
+    }
+
+    let (name, path) = match config_path {
+        Some(p) => {
+            let path = p.to_string_lossy().into_owned();
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Default Library".to_string());
+            (name, path)
+        }
+        None => ("Default Library".to_string(), String::new()),
+    };
+
+    let lib = match find_library_by_path(pool, &path).await? {
+        Some(l) => l,
+        // Fall back to a generic name if the derived one collides (UNIQUE name).
+        None => match create_library(pool, &name, &path).await {
+            Ok(l) => l,
+            Err(_) => create_library(pool, "Default Library", &path).await?,
+        },
+    };
+
+    sqlx::query!(
+        r#"UPDATE tracks SET library_id = ? WHERE library_id IS NULL"#,
+        lib.id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// gets all existing paths in the form of a HashSet
 /// this is the weakest layer of deduplication
-pub async fn load_existing_paths(pool: &SqlitePool) -> Result<HashSet<String>, sqlx::Error> {
-    let rows = sqlx::query_scalar!("SELECT file_path FROM tracks")
+pub async fn load_existing_paths(
+    pool: &SqlitePool,
+    library_id: i64,
+) -> Result<HashSet<String>, sqlx::Error> {
+    let rows = sqlx::query_scalar!("SELECT file_path FROM tracks WHERE library_id = ?", library_id)
         .fetch_all(pool)
         .await?;
     Ok(rows.into_iter().collect())
@@ -23,19 +169,31 @@ pub async fn load_existing_paths(pool: &SqlitePool) -> Result<HashSet<String>, s
 
 /// gets all existing isrcs in the form of a HashSet
 /// this is a very solid layer of deduplication, if isrc is present for each track
-pub async fn load_existing_isrcs(pool: &SqlitePool) -> Result<HashSet<String>, sqlx::Error> {
-    let rows = sqlx::query_scalar!("SELECT isrc FROM tracks WHERE isrc IS NOT NULL AND isrc != ''")
-        .fetch_all(pool)
-        .await?;
+pub async fn load_existing_isrcs(
+    pool: &SqlitePool,
+    library_id: i64,
+) -> Result<HashSet<String>, sqlx::Error> {
+    let rows = sqlx::query_scalar!(
+        "SELECT isrc FROM tracks WHERE library_id = ? AND isrc IS NOT NULL AND isrc != ''",
+        library_id
+    )
+    .fetch_all(pool)
+    .await?;
     Ok(rows.into_iter().flatten().collect())
 }
 
 /// gets all existing hashes in the form of a HashSet
 /// this is the strongest layer of deduplication, but the most performance intensive on initial hashing
-pub async fn load_existing_hashes(pool: &SqlitePool) -> Result<HashSet<String>, sqlx::Error> {
-    let rows = sqlx::query_scalar!("SELECT file_hash FROM tracks WHERE file_hash IS NOT NULL")
-        .fetch_all(pool)
-        .await?;
+pub async fn load_existing_hashes(
+    pool: &SqlitePool,
+    library_id: i64,
+) -> Result<HashSet<String>, sqlx::Error> {
+    let rows = sqlx::query_scalar!(
+        "SELECT file_hash FROM tracks WHERE library_id = ? AND file_hash IS NOT NULL",
+        library_id
+    )
+    .fetch_all(pool)
+    .await?;
     Ok(rows.into_iter().flatten().collect())
 }
 
@@ -43,8 +201,14 @@ pub async fn load_existing_hashes(pool: &SqlitePool) -> Result<HashSet<String>, 
 pub async fn insert_track(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track: &TrackInfo,
+    library_id: i64,
 ) -> Result<(), sqlx::Error> {
-    let path = track.file_path.to_str().unwrap();
+    // Filenames aren't guaranteed UTF-8 on Linux; skip rather than panic on the
+    // rare non-UTF-8 path so one odd file can't abort an entire scan.
+    let Some(path) = track.file_path.to_str() else {
+        tracing::warn!(path = ?track.file_path, "skipping track with non-UTF-8 path");
+        return Ok(());
+    };
     sqlx::query!(
         r#"
         INSERT INTO tracks (
@@ -95,13 +259,14 @@ pub async fn insert_track(
         musicbrainz_release_artist_id,
         musicbrainz_work_id,
         status,
-        file_hash
+        file_hash,
+        library_id
     ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?
     )"#,
         path,
         track.title,
@@ -150,7 +315,8 @@ pub async fn insert_track(
         track.musicbrainz_release_artist_id,
         track.musicbrainz_work_id,
         track.status,
-        track.file_hash
+        track.file_hash,
+        library_id
     )
     .execute(&mut **tx)
     .await?;
@@ -185,6 +351,19 @@ macro_rules! row_to_summary {
     }};
 }
 
+/// Builds an FTS5 MATCH expression from raw user input. Each whitespace token
+/// becomes a quoted prefix term (`"foo"*`), so search-as-you-type matches
+/// partial words, and quoting neutralizes FTS5 operator characters in the input.
+/// Tokens are implicitly AND-ed by FTS5. Returns `None` when there's nothing to
+/// search for.
+fn fts_match_query(raw: &str) -> Option<String> {
+    let terms: Vec<String> = raw
+        .split_whitespace()
+        .map(|tok| format!("\"{}\"*", tok.replace('"', "\"\"")))
+        .collect();
+    (!terms.is_empty()).then(|| terms.join(" "))
+}
+
 /// db query to return all tracks with a certain status filter, and optionally ID filter
 /// potentially expand later to allow more flexibility in queries
 pub async fn load_tracks(
@@ -192,12 +371,14 @@ pub async fn load_tracks(
     id: Option<i64>,
     status_filter: Option<&str>,
     search_query: Option<&str>,
+    library_id: i64,
 ) -> Result<Vec<TrackSummary>, sqlx::Error> {
     match (id, status_filter, search_query) {
         (Some(id_val), Some(status), None) => Ok(sqlx::query!(
             r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-                FROM tracks WHERE id = ? AND status = ?"#,
+                FROM tracks WHERE library_id = ? AND id = ? AND status = ?"#,
+            library_id,
             id_val,
             status,
         )
@@ -209,7 +390,8 @@ pub async fn load_tracks(
         (Some(id_val), None, None) => Ok(sqlx::query!(
             r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-                FROM tracks WHERE id = ?"#,
+                FROM tracks WHERE library_id = ? AND id = ?"#,
+            library_id,
             id_val
         )
         .fetch_all(pool)
@@ -220,7 +402,8 @@ pub async fn load_tracks(
         (None, Some(status), None) => Ok(sqlx::query!(
             r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-                FROM tracks WHERE status = ?"#,
+                FROM tracks WHERE library_id = ? AND status = ?"#,
+            library_id,
             status
         )
         .fetch_all(pool)
@@ -229,19 +412,18 @@ pub async fn load_tracks(
         .map(|row| row_to_summary!(row))
         .collect()),
         (None, Some(status), Some(query)) => {
-            let pattern = format!("%{}%", query);
+            let Some(fts) = fts_match_query(query) else {
+                return Box::pin(load_tracks(pool, None, Some(status), None, library_id)).await;
+            };
             Ok(sqlx::query!(
                 r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
                 FROM tracks
-                WHERE (title LIKE ? OR artist LIKE ? OR album LIKE ?
-                    OR album_artist LIKE ? OR genre LIKE ?)
+                WHERE library_id = ?
+                AND id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?)
                 AND status = ?"#,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
+                library_id,
+                fts,
                 status
             )
             .fetch_all(pool)
@@ -251,17 +433,16 @@ pub async fn load_tracks(
             .collect())
         }
         (None, None, Some(query)) => {
-            let pattern = format!("%{}%", query);
+            let Some(fts) = fts_match_query(query) else {
+                return Box::pin(load_tracks(pool, None, None, None, library_id)).await;
+            };
             Ok(sqlx::query!(
                 r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-                FROM tracks WHERE (title LIKE ? OR artist LIKE ? OR album LIKE ?
-                    OR album_artist LIKE ? OR genre LIKE ?)"#,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
-                pattern
+                FROM tracks WHERE library_id = ?
+                AND id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?)"#,
+                library_id,
+                fts
             )
             .fetch_all(pool)
             .await?
@@ -272,7 +453,8 @@ pub async fn load_tracks(
         (None, None, None) => Ok(sqlx::query!(
             r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-                FROM tracks"#
+                FROM tracks WHERE library_id = ?"#,
+            library_id
         )
         .fetch_all(pool)
         .await?
@@ -358,31 +540,63 @@ pub async fn load_track_full(pool: &SqlitePool, id: i64) -> Result<Option<TrackI
 pub async fn count_tracks(
     pool: &SqlitePool,
     status_filter: Option<&str>,
+    library_id: i64,
 ) -> Result<i64, sqlx::Error> {
     if let Some(status) = status_filter {
-        sqlx::query_scalar!(r#"SELECT COUNT(*) FROM tracks WHERE status = ?"#, status)
-            .fetch_one(pool)
-            .await
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) FROM tracks WHERE library_id = ? AND status = ?"#,
+            library_id,
+            status
+        )
+        .fetch_one(pool)
+        .await
     } else {
-        sqlx::query_scalar!(r#"SELECT COUNT(*) FROM tracks"#)
-            .fetch_one(pool)
-            .await
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) FROM tracks WHERE library_id = ?"#,
+            library_id
+        )
+        .fetch_one(pool)
+        .await
     }
 }
 
 /// Enrichment dead letters: tracks that failed matching or weren't found.
-pub async fn load_dead_letter(pool: &SqlitePool) -> Result<Vec<TrackSummary>, sqlx::Error> {
-    Ok(sqlx::query!(
-        r#"SELECT id, isrc, file_path, title, artist, album,
-        file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-        FROM tracks WHERE status IN ('failed', 'not_found')
-        ORDER BY artist, album, title"#
-    )
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|row| row_to_summary!(row))
-    .collect())
+/// `search` applies the same FTS5 filter as the Library tab so search behaves
+/// identically across tabs.
+pub async fn load_dead_letter(
+    pool: &SqlitePool,
+    search: Option<&str>,
+    library_id: i64,
+) -> Result<Vec<TrackSummary>, sqlx::Error> {
+    let fts = search.and_then(fts_match_query);
+    match fts {
+        Some(fts) => Ok(sqlx::query!(
+            r#"SELECT id, isrc, file_path, title, artist, album,
+            file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
+            FROM tracks WHERE library_id = ? AND status IN ('failed', 'not_found')
+            AND id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?)
+            ORDER BY artist, album, title"#,
+            library_id,
+            fts
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row_to_summary!(row))
+        .collect()),
+        None => Ok(sqlx::query!(
+            r#"SELECT id, isrc, file_path, title, artist, album,
+            file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
+            FROM tracks WHERE library_id = ? AND status IN ('failed', 'not_found')
+            ORDER BY artist, album, title"#,
+            library_id
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row_to_summary!(row))
+        .collect()),
+    }
 }
 
 /// Aggregated library statistics for the stats screen.
@@ -400,72 +614,80 @@ pub struct Stats {
     pub health: Vec<(String, i64)>,
 }
 
-pub async fn compute_stats(pool: &SqlitePool) -> Result<Stats, sqlx::Error> {
+pub async fn compute_stats(pool: &SqlitePool, library_id: i64) -> Result<Stats, sqlx::Error> {
     let totals = sqlx::query!(
         r#"SELECT COUNT(*) AS "n!", COALESCE(SUM(file_size), 0) AS "size!",
         COALESCE(SUM(duration), 0) AS "dur!", COALESCE(AVG(bitrate), 0.0) AS "avg!"
-        FROM tracks"#
+        FROM tracks WHERE library_id = ?"#,
+        library_id
     )
     .fetch_one(pool)
     .await?;
 
     let lossless = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM tracks
-        WHERE file_format IN ('FLAC','ALAC','APE','WAV','AIFF','WAVPACK')"#
+        WHERE library_id = ? AND file_format IN ('FLAC','ALAC','APE','WAV','AIFF','WAVPACK')"#,
+        library_id
     )
     .fetch_one(pool)
     .await?;
 
     let by_format = sqlx::query!(
-        r#"SELECT COALESCE(file_format, '?') AS "fmt!", COUNT(*) AS "n!",
-        COALESCE(SUM(file_size), 0) AS "size!"
-        FROM tracks GROUP BY file_format ORDER BY 2 DESC"#
+        r#"SELECT COALESCE(file_format, '?') AS "fmt!: String", COUNT(*) AS "n!: i64",
+        COALESCE(SUM(file_size), 0) AS "size!: i64"
+        FROM tracks WHERE library_id = ? GROUP BY file_format ORDER BY 2 DESC"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.fmt, r.n as i64, r.size))
+    .map(|r| (r.fmt, r.n, r.size))
     .collect();
 
     let by_decade = sqlx::query!(
-        r#"SELECT ((release_year / 10) * 10) AS "decade!", COUNT(*) AS "n!"
-        FROM tracks WHERE release_year IS NOT NULL
-        GROUP BY 1 ORDER BY 1"#
+        r#"SELECT ((release_year / 10) * 10) AS "decade!: i64", COUNT(*) AS "n!: i64"
+        FROM tracks WHERE library_id = ? AND release_year IS NOT NULL
+        GROUP BY 1 ORDER BY 1"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (format!("{}s", r.decade), r.n as i64))
+    .map(|r| (format!("{}s", r.decade), r.n))
     .collect();
 
     let top_artists = sqlx::query!(
-        r#"SELECT COALESCE(artist, '(unknown)') AS "name!", COUNT(*) AS "n!"
-        FROM tracks GROUP BY artist ORDER BY 2 DESC LIMIT 12"#
+        r#"SELECT COALESCE(artist, '(unknown)') AS "name!: String", COUNT(*) AS "n!: i64"
+        FROM tracks WHERE library_id = ? GROUP BY artist ORDER BY 2 DESC LIMIT 12"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.name, r.n as i64))
+    .map(|r| (r.name, r.n))
     .collect();
 
     let by_status = sqlx::query!(
-        r#"SELECT status AS "s!", COUNT(*) AS "n!"
-        FROM tracks GROUP BY status ORDER BY 2 DESC"#
+        r#"SELECT status AS "s!: String", COUNT(*) AS "n!: i64"
+        FROM tracks WHERE library_id = ? GROUP BY status ORDER BY 2 DESC"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.s, r.n as i64))
+    .map(|r| (r.s, r.n))
     .collect();
 
     let health = sqlx::query!(
-        r#"SELECT health_issue AS "issue!", COUNT(*) AS "n!"
-        FROM tracks WHERE health_issue IS NOT NULL GROUP BY health_issue ORDER BY 2 DESC"#
+        r#"SELECT health_issue AS "issue!: String", COUNT(*) AS "n!: i64"
+        FROM tracks WHERE library_id = ? AND health_issue IS NOT NULL
+        GROUP BY health_issue ORDER BY 2 DESC"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.issue, r.n as i64))
+    .map(|r| (r.issue, r.n))
     .collect();
 
     Ok(Stats {
@@ -495,38 +717,41 @@ pub struct GroupRow {
 pub async fn load_groups(
     pool: &SqlitePool,
     mode: crate::app::GroupMode,
+    library_id: i64,
 ) -> Result<Vec<GroupRow>, sqlx::Error> {
     let rows = match mode {
         crate::app::GroupMode::Artist => sqlx::query!(
-            r#"SELECT COALESCE(artist, '(unknown)') AS "name!",
-                COUNT(*) AS "count!",
-                COALESCE(SUM(file_size), 0) AS "total_size!",
-                COALESCE(SUM(duration), 0) AS "total_duration!"
-                FROM tracks GROUP BY artist ORDER BY 2 DESC, 1"#
+            r#"SELECT COALESCE(artist, '(unknown)') AS "name!: String",
+                COUNT(*) AS "count!: i64",
+                COALESCE(SUM(file_size), 0) AS "total_size!: i64",
+                COALESCE(SUM(duration), 0) AS "total_duration!: i64"
+                FROM tracks WHERE library_id = ? GROUP BY artist ORDER BY 2 DESC, 1"#,
+            library_id
         )
         .fetch_all(pool)
         .await?
         .into_iter()
         .map(|r| GroupRow {
             name: r.name,
-            count: r.count as i64,
+            count: r.count,
             total_size: r.total_size,
             total_duration: r.total_duration,
         })
         .collect(),
         _ => sqlx::query!(
-            r#"SELECT COALESCE(album, '(unknown)') AS "name!",
-                COUNT(*) AS "count!",
-                COALESCE(SUM(file_size), 0) AS "total_size!",
-                COALESCE(SUM(duration), 0) AS "total_duration!"
-                FROM tracks GROUP BY album ORDER BY 2 DESC, 1"#
+            r#"SELECT COALESCE(album, '(unknown)') AS "name!: String",
+                COUNT(*) AS "count!: i64",
+                COALESCE(SUM(file_size), 0) AS "total_size!: i64",
+                COALESCE(SUM(duration), 0) AS "total_duration!: i64"
+                FROM tracks WHERE library_id = ? GROUP BY album ORDER BY 2 DESC, 1"#,
+            library_id
         )
         .fetch_all(pool)
         .await?
         .into_iter()
         .map(|r| GroupRow {
             name: r.name,
-            count: r.count as i64,
+            count: r.count,
             total_size: r.total_size,
             total_duration: r.total_duration,
         })
@@ -536,10 +761,14 @@ pub async fn load_groups(
 }
 
 /// Distinct non-null file formats present in the library, for the format facet.
-pub async fn distinct_formats(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+pub async fn distinct_formats(
+    pool: &SqlitePool,
+    library_id: i64,
+) -> Result<Vec<String>, sqlx::Error> {
     Ok(sqlx::query_scalar!(
         r#"SELECT DISTINCT file_format FROM tracks
-        WHERE file_format IS NOT NULL ORDER BY file_format"#
+        WHERE library_id = ? AND file_format IS NOT NULL ORDER BY file_format"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
@@ -548,9 +777,12 @@ pub async fn distinct_formats(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Er
     .collect())
 }
 
-/// Deletes everything from the tracks table
-pub async fn truncate_tracks(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query!(r#"DELETE FROM tracks"#).execute(pool).await?;
+/// Deletes every track in the given library (the "fresh scan" rebuild). Scoped
+/// so rebuilding one library never touches another's rows.
+pub async fn truncate_tracks(pool: &SqlitePool, library_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query!(r#"DELETE FROM tracks WHERE library_id = ?"#, library_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -613,9 +845,13 @@ pub async fn mark_undone(pool: &SqlitePool, log_id: i64) -> Result<(), sqlx::Err
 
 /// Re-inserts a full track row (used when undoing a purge). Wraps the existing
 /// transaction-based insert in its own transaction.
-pub async fn insert_track_pool(pool: &SqlitePool, track: &TrackInfo) -> Result<(), sqlx::Error> {
+pub async fn insert_track_pool(
+    pool: &SqlitePool,
+    track: &TrackInfo,
+    library_id: i64,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    insert_track(&mut tx, track).await?;
+    insert_track(&mut tx, track, library_id).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -623,25 +859,51 @@ pub async fn insert_track_pool(pool: &SqlitePool, track: &TrackInfo) -> Result<(
 // Trash workflow
 
 /// Counts tracks currently flagged for deletion (the Trash tab).
-pub async fn count_marked(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar!(r#"SELECT COUNT(*) FROM tracks WHERE marked_for_deletion = 1"#)
-        .fetch_one(pool)
-        .await
+pub async fn count_marked(pool: &SqlitePool, library_id: i64) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT COUNT(*) FROM tracks WHERE library_id = ? AND marked_for_deletion = 1"#,
+        library_id
+    )
+    .fetch_one(pool)
+    .await
 }
 
-/// Loads every track flagged for deletion.
-pub async fn load_marked_tracks(pool: &SqlitePool) -> Result<Vec<TrackSummary>, sqlx::Error> {
-    Ok(sqlx::query!(
-        r#"SELECT id, isrc, file_path, title, artist, album,
-        file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-        FROM tracks WHERE marked_for_deletion = 1
-        ORDER BY artist, album, title"#
-    )
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|row| row_to_summary!(row))
-    .collect())
+/// Loads every track flagged for deletion. `search` applies the same FTS5
+/// filter as the Library tab for consistent cross-tab search.
+pub async fn load_marked_tracks(
+    pool: &SqlitePool,
+    search: Option<&str>,
+    library_id: i64,
+) -> Result<Vec<TrackSummary>, sqlx::Error> {
+    let fts = search.and_then(fts_match_query);
+    match fts {
+        Some(fts) => Ok(sqlx::query!(
+            r#"SELECT id, isrc, file_path, title, artist, album,
+            file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
+            FROM tracks WHERE library_id = ? AND marked_for_deletion = 1
+            AND id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?)
+            ORDER BY artist, album, title"#,
+            library_id,
+            fts
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row_to_summary!(row))
+        .collect()),
+        None => Ok(sqlx::query!(
+            r#"SELECT id, isrc, file_path, title, artist, album,
+            file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
+            FROM tracks WHERE library_id = ? AND marked_for_deletion = 1
+            ORDER BY artist, album, title"#,
+            library_id
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row_to_summary!(row))
+        .collect()),
+    }
 }
 
 /// Flags or unflags a single track for deletion. Non-destructive - the file is
@@ -701,11 +963,15 @@ pub async fn set_health_issue(
 }
 
 /// Tracks plus their last-scan time (unix seconds) for the incremental rescan.
-pub async fn tracks_for_rescan(pool: &SqlitePool) -> Result<Vec<(i64, PathBuf, i64)>, sqlx::Error> {
+pub async fn tracks_for_rescan(
+    pool: &SqlitePool,
+    library_id: i64,
+) -> Result<Vec<(i64, PathBuf, i64)>, sqlx::Error> {
     Ok(sqlx::query!(
-        r#"SELECT id, file_path,
-        CAST(COALESCE(strftime('%s', last_scanned_at), '0') AS INTEGER) AS "last_scanned!"
-        FROM tracks"#
+        r#"SELECT id AS "id!", file_path,
+        CAST(COALESCE(strftime('%s', last_scanned_at), '0') AS INTEGER) AS "last_scanned!: i64"
+        FROM tracks WHERE library_id = ?"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
@@ -777,12 +1043,20 @@ pub async fn update_track_metadata(
     Ok(())
 }
 
-pub async fn load_tracks_paths(pool: &SqlitePool) -> Result<Vec<(i64, PathBuf)>, sqlx::Error> {
-    let query_result = sqlx::query!(r#"SELECT id, file_path FROM tracks"#)
-        .fetch_all(pool)
-        .await?
+pub async fn load_tracks_paths(
+    pool: &SqlitePool,
+    library_id: i64,
+) -> Result<Vec<(i64, PathBuf)>, sqlx::Error> {
+    let query_result = sqlx::query!(
+        r#"SELECT id, file_path FROM tracks WHERE library_id = ?"#,
+        library_id
+    )
+    .fetch_all(pool)
+    .await?
         .into_iter()
-        .map(|r| (r.id.unwrap(), PathBuf::from(r.file_path)))
+        // `id` is a non-null PK in practice, but sqlx infers it nullable here;
+        // skip any NULL rather than unwrap-panicking.
+        .filter_map(|r| r.id.map(|id| (id, PathBuf::from(r.file_path))))
         .collect();
     Ok(query_result)
 }
@@ -888,18 +1162,20 @@ pub async fn apply_enrichment(
 ///                    layer can't.
 pub async fn load_duplicate_groups(
     pool: &SqlitePool,
+    library_id: i64,
 ) -> Result<Vec<DuplicateGroupSummary>, sqlx::Error> {
     let mut groups: Vec<DuplicateGroupSummary> = sqlx::query!(
         r#"SELECT file_hash,
-        COUNT(*) AS n,
-        MIN(title) AS title,
-        MIN(artist) AS artist,
-        MIN(album) AS album
+        COUNT(*) AS "n!: i64",
+        MIN(title) AS "title?: String",
+        MIN(artist) AS "artist?: String",
+        MIN(album) AS "album?: String"
         FROM tracks
-        WHERE file_hash IS NOT NULL AND marked_for_deletion = 0
+        WHERE library_id = ? AND file_hash IS NOT NULL AND marked_for_deletion = 0
         GROUP BY file_hash
         HAVING COUNT(*) > 1
-        ORDER BY n DESC, artist, album, title"#
+        ORDER BY 2 DESC, 4, 5, 3"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
@@ -916,16 +1192,17 @@ pub async fn load_duplicate_groups(
 
     let isrc_groups = sqlx::query!(
         r#"SELECT isrc,
-        COUNT(*) AS n,
-        MIN(title) AS title,
-        MIN(artist) AS artist,
-        MIN(album) AS album
+        COUNT(*) AS "n!: i64",
+        MIN(title) AS "title?: String",
+        MIN(artist) AS "artist?: String",
+        MIN(album) AS "album?: String"
         FROM tracks
-        WHERE isrc IS NOT NULL AND isrc != '' AND marked_for_deletion = 0
+        WHERE library_id = ? AND isrc IS NOT NULL AND isrc != '' AND marked_for_deletion = 0
         GROUP BY isrc
         HAVING COUNT(*) > 1
             AND COUNT(DISTINCT COALESCE(file_hash, CAST(id AS TEXT))) > 1
-        ORDER BY n DESC, artist, album, title"#
+        ORDER BY 2 DESC, 4, 5, 3"#,
+        library_id
     )
     .fetch_all(pool)
     .await?
@@ -943,18 +1220,52 @@ pub async fn load_duplicate_groups(
     Ok(groups)
 }
 
+/// Counts the duplicate groups shown in the Duplicates tab without loading their
+/// members. Mirrors the grouping in `load_duplicate_groups` (hash groups + ISRC
+/// groups that span more than one distinct file) so the tab badge stays correct
+/// cheaply, instead of reloading the full DuplicatesView.
+pub async fn count_duplicate_groups(pool: &SqlitePool, library_id: i64) -> Result<i64, sqlx::Error> {
+    let hash_groups = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) FROM (
+            SELECT file_hash FROM tracks
+            WHERE library_id = ? AND file_hash IS NOT NULL AND marked_for_deletion = 0
+            GROUP BY file_hash HAVING COUNT(*) > 1
+        )"#,
+        library_id
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let isrc_groups = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) FROM (
+            SELECT isrc FROM tracks
+            WHERE library_id = ? AND isrc IS NOT NULL AND isrc != '' AND marked_for_deletion = 0
+            GROUP BY isrc
+            HAVING COUNT(*) > 1
+                AND COUNT(DISTINCT COALESCE(file_hash, CAST(id AS TEXT))) > 1
+        )"#,
+        library_id
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(hash_groups + isrc_groups)
+}
+
 /// Loads the member tracks of a duplicate group, keyed by hash or ISRC.
 pub async fn load_duplicate_members(
     pool: &SqlitePool,
     kind: DuplicateKind,
     key: &str,
+    library_id: i64,
 ) -> Result<Vec<TrackSummary>, sqlx::Error> {
     let rows = match kind {
         DuplicateKind::Hash => {
             sqlx::query!(
                 r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-                FROM tracks WHERE file_hash = ? AND marked_for_deletion = 0"#,
+                FROM tracks WHERE library_id = ? AND file_hash = ? AND marked_for_deletion = 0"#,
+                library_id,
                 key
             )
             .fetch_all(pool)
@@ -967,7 +1278,8 @@ pub async fn load_duplicate_members(
             sqlx::query!(
                 r#"SELECT id, isrc, file_path, title, artist, album,
                 file_format, file_size, duration, bitrate, status, file_hash, marked_for_deletion, health_issue
-                FROM tracks WHERE isrc = ? AND marked_for_deletion = 0"#,
+                FROM tracks WHERE library_id = ? AND isrc = ? AND marked_for_deletion = 0"#,
+                library_id,
                 key
             )
             .fetch_all(pool)

@@ -190,11 +190,12 @@ async fn lookup(
 /// each row's status to `enriched`, `not_found`, or `failed`.
 pub async fn enrich_pending(
     pool: SqlitePool,
+    library_id: i64,
     api_key: String,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     sender: tokio::sync::mpsc::Sender<EnrichEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let pending = db::load_tracks(&pool, None, Some("pending"), None).await?;
+    let pending = db::load_tracks(&pool, None, Some("pending"), None, library_id).await?;
     let total = pending.len();
 
     let client = reqwest::Client::builder()
