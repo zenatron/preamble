@@ -1826,18 +1826,29 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // [e] - start the enrichment pipeline from the Enrichment tab.
+    // [e] - enrich the checkbox-selected tracks (or the highlighted one) on the
+    // Enrichment tab. Use [i] to select all first to enrich every pending track.
     if key.code == KeyCode::Char('e') {
         if app.tabs[app.current_tab].label == "Enrichment" && !app.is_enriching {
             if let Some(api_key) = app.config.resolved_acoustid_key.clone() {
+                let ids = target_ids(&app.tabs[app.current_tab]);
+                if ids.is_empty() {
+                    app.set_status(StatusLevel::Warning, "No tracks to enrich.");
+                    return;
+                }
                 let (tx, rx) = tokio::sync::mpsc::channel(8);
                 let cancel = app.begin_cancelable();
                 app.enrich_receiver = Some(rx);
                 app.is_enriching = true;
-                app.enrich_progress = Some((0, app.tabs[app.current_tab].tracks.len()));
+                app.enrich_progress = Some((0, ids.len()));
+                app.set_status(
+                    StatusLevel::Info,
+                    format!("Enriching {} track(s)…", ids.len()),
+                );
                 tokio::spawn(enrich_pending(
                     app.pool.clone(),
                     app.active_library_id(),
+                    ids,
                     api_key,
                     cancel,
                     tx,

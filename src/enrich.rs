@@ -5,10 +5,12 @@
 //   audio file --> fpcalc --> fingerprint+duration --> AcoustID --> MusicBrainz
 //   recording/release-group metadata --> written back to the row.
 //
-// AcoustID's `meta=recordings+releasegroups` returns metadata sourced from
+// AcoustID's `meta=recordings releasegroups` returns metadata sourced from
 // MusicBrainz (recording/artist/release-group MBIDs + titles), so a single
 // AcoustID call yields the MusicBrainz match without a second round-trip.
-// Requests are issued sequentially with a small delay to stay within the
+// Lookups are POSTed (the spec prefers POST because Chromaprint fingerprints
+// are long enough to overflow a GET URL), `meta` is space-separated per the
+// spec, requests are issued sequentially with a small delay to stay within the
 // AcoustID rate limit, and the HTTP client sends an identifying User-Agent.
 
 use std::time::Duration;
@@ -114,6 +116,8 @@ struct AcoustIdArtist {
 #[derive(Deserialize)]
 struct AcoustIdReleaseGroup {
     #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
     title: Option<String>,
 }
 
@@ -125,13 +129,16 @@ async fn lookup(
     fp: &FpcalcOutput,
 ) -> Result<Option<EnrichmentResult>, String> {
     let duration = fp.duration.round() as i64;
+    // POST (not GET): fingerprints are long enough to overflow a GET URL, and
+    // the spec prefers POST. `.form()` encodes the space-separated `meta` value
+    // correctly (spaces -> `+`), which the service splits as documented.
     let response = client
-        .get(ACOUSTID_LOOKUP_URL)
-        .query(&[
+        .post(ACOUSTID_LOOKUP_URL)
+        .form(&[
             ("client", api_key),
             ("duration", &duration.to_string()),
             ("fingerprint", &fp.fingerprint),
-            ("meta", "recordings+releasegroups+compress"),
+            ("meta", "recordings releasegroups"),
         ])
         .send()
         .await
@@ -173,12 +180,16 @@ async fn lookup(
     let artist_names: Vec<String> = recording.artists.iter().map(|a| a.name.clone()).collect();
     let artist = (!artist_names.is_empty()).then(|| artist_names.join("; "));
     let mb_artist_id = recording.artists.into_iter().next().map(|a| a.id);
-    let album = recording.releasegroups.into_iter().find_map(|rg| rg.title);
+    // Take the album title and release-group MBID from the recording's release
+    // groups (first match for each; not every group carries both).
+    let releasegroups = recording.releasegroups;
+    let album = releasegroups.iter().find_map(|rg| rg.title.clone());
+    let mb_release_group_id = releasegroups.into_iter().find_map(|rg| rg.id);
 
     Ok(Some(EnrichmentResult {
         acoustid,
         mb_recording_id: Some(recording.id),
-        mb_release_group_id: None, // release-group MBID omitted by compress meta
+        mb_release_group_id,
         mb_artist_id,
         title: recording.title,
         artist,
@@ -186,16 +197,23 @@ async fn lookup(
     }))
 }
 
-/// Enriches every `pending` track. Emits progress over `sender` and updates
-/// each row's status to `enriched`, `not_found`, or `failed`.
+/// Enriches the given `pending` tracks (by id). Emits progress over `sender` and
+/// updates each row's status to `enriched`, `not_found`, or `failed`. Only ids
+/// that are still `pending` in this library are processed.
 pub async fn enrich_pending(
     pool: SqlitePool,
     library_id: i64,
+    ids: Vec<i64>,
     api_key: String,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     sender: tokio::sync::mpsc::Sender<EnrichEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let pending = db::load_tracks(&pool, None, Some("pending"), None, library_id).await?;
+    let wanted: std::collections::HashSet<i64> = ids.into_iter().collect();
+    let pending: Vec<_> = db::load_tracks(&pool, None, Some("pending"), None, library_id)
+        .await?
+        .into_iter()
+        .filter(|t| t.id.map(|id| wanted.contains(&id)).unwrap_or(false))
+        .collect();
     let total = pending.len();
 
     let client = reqwest::Client::builder()
