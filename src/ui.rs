@@ -208,6 +208,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         row("d", "flag → Trash (Trash: purge)"),
         row("r", "Trash: restore · Enrichment: retry"),
         row("k", "Duplicates: keep highlighted member"),
+        row("K", "Duplicates: keep all (dismiss group)"),
         row("e", "Enrichment: run pipeline"),
         row("m", "edit tags of highlighted track"),
         row("x", "export current view"),
@@ -1826,6 +1827,20 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // [Shift+K] in the Duplicates tab, dismiss the current group without
+    // flagging anything. All members are kept; the group is simply hidden.
+    if key.code == KeyCode::Char('K') {
+        if app.tabs[app.current_tab].label == "Duplicates" {
+            app.duplicates.skip_all(&app.pool).await.ok();
+            app.set_status(
+                StatusLevel::Success,
+                "Duplicate group dismissed (all files kept).",
+            );
+            app.reload().await.ok();
+        }
+        return;
+    }
+
     // [e] - enrich the checkbox-selected tracks (or the highlighted one) on the
     // Enrichment tab. Use [i] to select all first to enrich every pending track.
     if key.code == KeyCode::Char('e') {
@@ -1963,7 +1978,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_shortcuts_row(f: &mut Frame, app: &mut App, area: Rect) {
     let text = match app.tabs[app.current_tab].label {
-        "Duplicates" => "[TAB] tabs · [P] pane · [↑/↓] nav · [K]eep · [?] help",
+        "Duplicates" => "[TAB] tabs · [P] pane · [↑/↓] nav · [K]eep one · shift+[K]eep all · [?] help",
         "Enrichment" => {
             "[TAB] tabs · [E]nrich · [R]etry · [SPACE]lect · [D] flag · [M] edit · [/] search · [?] help"
         }

@@ -979,6 +979,18 @@ impl DuplicatesView {
         let flagged: Vec<i64> = ids.into_iter().filter(|id| *id != keeper_id).collect();
         Ok(flagged)
     }
+
+    /// Dismisses the currently selected group without touching any files.
+    /// Records the group in duplicates_skipped so it no longer appears in the
+    /// Duplicates tab
+    pub async fn skip_all(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        let Some(group) = self.groups.get(
+            self.groups_state.selected().unwrap_or(0)
+        ) else {
+            return Ok(());
+        };
+        db::skip_duplicate_group(pool, &group.key, group.kind.label(), self.library_id).await
+    }
 }
 
 /// Ranks duplicate-group members and returns the index of the best candidate

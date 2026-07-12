@@ -16,6 +16,36 @@ A terminal music-library manager written in Rust. It scans a directory tree, rea
 - **Integrity** — health checks (zero-byte, decode errors, hash mismatch, low bitrate) and incremental rescans.
 - **Reporting** — a statistics screen plus CSV/JSON/M3U/duplicate-report exports.
 
+## Installation
+
+Prebuilt binaries are published on [GitHub Releases](https://github.com/zenatron/preamble/releases).
+
+**macOS / Linux:**
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/zenatron/preamble/releases/latest/download/preamble-installer.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://github.com/zenatron/preamble/releases/latest/download/preamble-installer.ps1 | iex
+```
+
+**Verify the download** before running it (requires the [GitHub CLI](https://cli.github.com/)):
+
+```sh
+gh attestation verify --repo zenatron/preamble preamble-installer.sh
+```
+
+This confirms the installer was built by the project's GitHub Actions workflow and hasn't been tampered with.
+
+**From source** (if you have Rust installed):
+
+```
+cargo install --git https://github.com/zenatron/preamble.git
+```
+
 ```
 cargo run -- /path/to/music
 ```

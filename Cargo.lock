@@ -1479,7 +1479,7 @@ dependencies = [
 
 [[package]]
 name = "preamble"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "axum",
  "blake3",
@@ -1487,6 +1487,7 @@ dependencies = [
  "csv",
  "futures",
  "humansize",
+ "libsqlite3-sys",
  "lofty",
  "notify",
  "ratatui",

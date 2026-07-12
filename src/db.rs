@@ -1172,9 +1172,11 @@ pub async fn load_duplicate_groups(
         MIN(album) AS "album?: String"
         FROM tracks
         WHERE library_id = ? AND file_hash IS NOT NULL AND marked_for_deletion = 0
+          AND NOT EXISTS (SELECT 1 FROM duplicates_skipped ds WHERE ds.key = file_hash AND ds.kind = 'hash' AND ds.library_id = ?)
         GROUP BY file_hash
         HAVING COUNT(*) > 1
         ORDER BY 2 DESC, 4, 5, 3"#,
+        library_id,
         library_id
     )
     .fetch_all(pool)
@@ -1198,10 +1200,12 @@ pub async fn load_duplicate_groups(
         MIN(album) AS "album?: String"
         FROM tracks
         WHERE library_id = ? AND isrc IS NOT NULL AND isrc != '' AND marked_for_deletion = 0
+          AND NOT EXISTS (SELECT 1 FROM duplicates_skipped ds WHERE ds.key = isrc AND ds.kind = 'isrc' AND ds.library_id = ?)
         GROUP BY isrc
         HAVING COUNT(*) > 1
             AND COUNT(DISTINCT COALESCE(file_hash, CAST(id AS TEXT))) > 1
         ORDER BY 2 DESC, 4, 5, 3"#,
+        library_id,
         library_id
     )
     .fetch_all(pool)
@@ -1229,8 +1233,10 @@ pub async fn count_duplicate_groups(pool: &SqlitePool, library_id: i64) -> Resul
         r#"SELECT COUNT(*) FROM (
             SELECT file_hash FROM tracks
             WHERE library_id = ? AND file_hash IS NOT NULL AND marked_for_deletion = 0
+              AND NOT EXISTS (SELECT 1 FROM duplicates_skipped ds WHERE ds.key = file_hash AND ds.kind = 'hash' AND ds.library_id = ?)
             GROUP BY file_hash HAVING COUNT(*) > 1
         )"#,
+        library_id,
         library_id
     )
     .fetch_one(pool)
@@ -1240,10 +1246,12 @@ pub async fn count_duplicate_groups(pool: &SqlitePool, library_id: i64) -> Resul
         r#"SELECT COUNT(*) FROM (
             SELECT isrc FROM tracks
             WHERE library_id = ? AND isrc IS NOT NULL AND isrc != '' AND marked_for_deletion = 0
+              AND NOT EXISTS (SELECT 1 FROM duplicates_skipped ds WHERE ds.key = isrc AND ds.kind = 'isrc' AND ds.library_id = ?)
             GROUP BY isrc
             HAVING COUNT(*) > 1
                 AND COUNT(DISTINCT COALESCE(file_hash, CAST(id AS TEXT))) > 1
         )"#,
+        library_id,
         library_id
     )
     .fetch_one(pool)
@@ -1290,4 +1298,23 @@ pub async fn load_duplicate_members(
         }
     };
     Ok(rows)
+}
+
+/// Records that the user dismissed a duplicate group (keep all), so it no
+/// longer appears in the Duplicates tab
+pub async fn skip_duplicate_group(
+    pool: &SqlitePool,
+    key: &str,
+    kind: &str,
+    library_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"INSERT OR IGNORE INTO duplicates_skipped (key, kind, library_id) VALUES (?, ?, ?)"#,
+        key,
+        kind,
+        library_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }

@@ -1,0 +1,9 @@
+[project]
+name = "preamble-mcp"
+version = "0.1.0"
+description = "MCP server for preamble FLAC music manager"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp>=1.28.1",
+]

@@ -1,7 +1,8 @@
 [package]
 name = "preamble"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
+repository = "https://github.com/zenatron/preamble"
 
 [dependencies]
 lofty = "0.22"
@@ -23,3 +24,16 @@ notify = "6"
 csv = "1"
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
+
+# Force bundled SQLite for cross-compilation (dist CI images may lack system sqlite3-dev)
+[dependencies.libsqlite3-sys]
+version = "0.30"
+features = ["bundled"]
+# Don't link to system sqlite — compile from source
+# so cross-compilation to aarch64-unknown-linux-gnu and
+# x86_64-pc-windows-msvc works without headers installed.
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
