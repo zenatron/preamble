@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT isrc,\n        COUNT(*) AS \"n!: i64\",\n        MIN(title) AS \"title?: String\",\n        MIN(artist) AS \"artist?: String\",\n        MIN(album) AS \"album?: String\"\n        FROM tracks\n        WHERE library_id = ? AND isrc IS NOT NULL AND isrc != '' AND marked_for_deletion = 0\n          AND NOT EXISTS (SELECT 1 FROM duplicates_skipped ds WHERE ds.key = isrc AND ds.kind = 'isrc' AND ds.library_id = ?)\n        GROUP BY isrc\n        HAVING COUNT(*) > 1\n            AND COUNT(DISTINCT COALESCE(file_hash, CAST(id AS TEXT))) > 1\n        ORDER BY 2 DESC, 4, 5, 3",
+  "describe": {
+    "columns": [
+      {
+        "name": "isrc",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      },
+      {
+        "name": "title?: String",
+        "ordinal": 2,
+        "type_info": "Null"
+      },
+      {
+        "name": "artist?: String",
+        "ordinal": 3,
+        "type_info": "Null"
+      },
+      {
+        "name": "album?: String",
+        "ordinal": 4,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7f59a6c809f914c15f5091fbc8e9d1413bd0317457aca2057922c1aa060201e9"
+}

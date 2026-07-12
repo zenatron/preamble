@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO duplicates_skipped (key, kind, library_id) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "179a8a19423f053d96115860d817ef694a121beaccbc2c5edc9c2a0ed7cbe15d"
+}
