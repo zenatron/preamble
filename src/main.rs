@@ -1,3 +1,4 @@
+mod api;
 mod app;
 mod config;
 mod db;
@@ -28,6 +29,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "preamble starting");
 
     let pool = db::init_db().await?;
+
+    // Start the HTTP API in the background if PREAMBLE_API_PORT is set.
+    let _api_handle = if let Some(port) = api::port_from_env() {
+        Some(api::start(pool.clone(), port).await?)
+    } else {
+        None
+    };
 
     // Migrate any pre-multi-library rows into a default library before anything
     // queries by library_id.

@@ -1,6 +1,6 @@
 [package]
 name = "preamble"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 
 [dependencies]
@@ -21,3 +21,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 notify = "6"
 csv = "1"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
