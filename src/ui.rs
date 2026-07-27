@@ -1436,8 +1436,9 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Enter search mode (not meaningful on the Duplicates grid).
-    if key.code == KeyCode::Char('/') && app.tabs[app.current_tab].label != "Duplicates" {
+    // Enter search mode. On the Duplicates tab this filters groups by tags or
+    // by the shared hash/ISRC key; elsewhere it filters the track rows.
+    if key.code == KeyCode::Char('/') {
         app.search_mode = true;
         return;
     }
@@ -1978,7 +1979,9 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_shortcuts_row(f: &mut Frame, app: &mut App, area: Rect) {
     let text = match app.tabs[app.current_tab].label {
-        "Duplicates" => "[TAB] tabs · [P] pane · [↑/↓] nav · [K]eep one · shift+[K]eep all · [?] help",
+        "Duplicates" => {
+            "[TAB] tabs · [P] pane · [↑/↓] nav · [/] search · [K]eep one · shift+[K]eep all · [?] help"
+        }
         "Enrichment" => {
             "[TAB] tabs · [E]nrich · [R]etry · [SPACE]lect · [D] flag · [M] edit · [/] search · [?] help"
         }
@@ -2498,7 +2501,17 @@ fn draw_confirmation_prompt(
 
 fn draw_duplicates_panel(f: &mut Frame, app: &mut App, area: Rect) {
     if app.duplicates.groups.is_empty() {
-        f.render_widget(Paragraph::new("No Duplicates Found").light_magenta(), area);
+        // Distinguish "clean library" from "your search matched nothing".
+        let message = if app.duplicates.query.trim().is_empty() {
+            "No Duplicates Found".to_string()
+        } else {
+            format!(
+                "No duplicate groups match \"{}\" ({} total)",
+                app.duplicates.query.trim(),
+                app.duplicates.total_groups(),
+            )
+        };
+        f.render_widget(Paragraph::new(message).light_magenta(), area);
         return;
     }
 
@@ -2531,6 +2544,17 @@ fn draw_duplicate_groups_list(f: &mut Frame, app: &mut App, area: Rect) {
         Style::default()
     };
 
+    // "[3/12]" normally; "[3/12 of 57]" while a search narrows the list.
+    let shown = app.duplicates.groups.len();
+    let total = app.duplicates.total_groups();
+    let mut title = format!(
+        "Duplicate Groups: [{}/{shown}]",
+        app.duplicates.groups_state.selected().unwrap_or(0) + 1,
+    );
+    if shown != total {
+        title.push_str(&format!(" of {total}"));
+    }
+
     let table = Table::new(
         rows,
         [
@@ -2554,14 +2578,7 @@ fn draw_duplicate_groups_list(f: &mut Frame, app: &mut App, area: Rect) {
     )
     .block(
         Block::default()
-            .title(
-                format!(
-                    "Duplicate Groups: [{}/{}]",
-                    app.duplicates.groups_state.selected().unwrap_or(0) + 1,
-                    app.duplicates.groups.len(),
-                )
-                .light_magenta(),
-            )
+            .title(title.light_magenta())
             .borders(Borders::ALL)
             .border_style(border_style),
     )
@@ -2778,6 +2795,65 @@ mod tests {
         // group drops off the list.
         assert_eq!(db::count_marked(&pool, app.active_library_id()).await.unwrap(), 1);
         assert_eq!(app.duplicates.groups.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn search_filters_duplicate_groups() {
+        let pool = test_pool().await;
+        // Two duplicate groups of two files each, distinguishable by tags.
+        for (hash, title, artist) in [("aaaa", "Alpha", "Ann"), ("bbbb", "Beta", "Bob")] {
+            for n in 0..2 {
+                sqlx::query(
+                    "INSERT INTO tracks (file_path, title, artist, status, file_hash) VALUES (?, ?, ?, 'pending', ?)",
+                )
+                .bind(format!("/x/{title}{n}.flac"))
+                .bind(title)
+                .bind(artist)
+                .bind(hash)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        let mut app = open_default(&pool).await;
+        app.current_screen = app::Screens::Main;
+        app.current_tab = tab_index(&app, "Duplicates");
+        assert_eq!(app.duplicates.groups.len(), 2);
+
+        // [/] must open search here too - it used to be suppressed on this tab.
+        handle_main_navigation(&mut app, press('/')).await;
+        assert!(app.search_mode);
+        for c in "bob".chars() {
+            handle_main_navigation(&mut app, press(c)).await;
+        }
+        // [Enter] commits immediately instead of waiting out the debounce.
+        handle_main_navigation(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
+
+        assert!(!app.search_mode);
+        assert_eq!(app.duplicates.groups.len(), 1);
+        assert_eq!(app.duplicates.groups[0].title.as_deref(), Some("Beta"));
+        assert_eq!(app.duplicates.total_groups(), 2);
+        // The surviving group is selected and its members are loaded.
+        assert_eq!(app.duplicates.groups_state.selected(), Some(0));
+        assert_eq!(app.duplicates.selected_members.len(), 2);
+
+        // A miss empties the list and clears the selection rather than leaving a
+        // stale index pointing past the end.
+        for c in "zzz".chars() {
+            handle_main_navigation(&mut app, press('/')).await;
+            handle_main_navigation(&mut app, press(c)).await;
+        }
+        handle_main_navigation(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
+        assert!(app.duplicates.groups.is_empty());
+        assert_eq!(app.duplicates.groups_state.selected(), None);
+        assert!(app.duplicates.selected_members.is_empty());
+
+        // [Esc] clears the query and restores every group.
+        handle_main_navigation(&mut app, press('/')).await;
+        handle_main_navigation(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
+        assert_eq!(app.duplicates.groups.len(), 2);
+        assert!(app.duplicates.query.is_empty());
     }
 
     #[tokio::test]

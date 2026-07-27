@@ -117,7 +117,7 @@ impl Config {
 
     fn write_default(&self) -> std::io::Result<()> {
         let header = "# preamble configuration\n\
-            # library_path          : default directory scanned when no CLI path is given\n\
+            # library_path          : default directory scanned when --path is not given\n\
             # formats               : audio file extensions to scan (lowercase, no dot)\n\
             # scan_concurrency      : files hashed/read in parallel during a scan\n\
             # acoustid_api_key      : optional; prefer the ACOUSTID_API_KEY env var / .env\n\

@@ -3,7 +3,7 @@
 # See https://github.com/zenatron/preamble#configuration
 # for configuration details
 
-# library_path     : default directory scanned when no CLI path is given
+# library_path     : default directory scanned when --path is not given
 # formats          : audio file extensions to scan (lowercase, no dot)
 # scan_concurrency : files hashed/read in parallel during a scan
 # acoustid_api_key : optional; prefer the ACOUSTID_API_KEY env var / .env

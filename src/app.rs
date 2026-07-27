@@ -403,9 +403,17 @@ impl App {
     }
 
     /// Reloads just the active tab (after a search/filter/sort change).
+    ///
+    /// The Duplicates tab renders from `self.duplicates` rather than its own
+    /// rows, so it re-filters the group list instead — no DB round trip, since
+    /// the unfiltered groups are already in memory.
     pub async fn reload_current_tab(&mut self) -> Result<(), sqlx::Error> {
         let pool = self.pool.clone();
         let library_id = self.active_library_id();
+        if self.on_duplicates_tab() {
+            self.duplicates.query = self.tabs[self.current_tab].search_query.clone();
+            return self.duplicates.apply_query(&pool).await;
+        }
         reload_tab(&pool, &mut self.tabs[self.current_tab], library_id).await
     }
 
@@ -876,7 +884,14 @@ impl EditState {
 }
 
 pub struct DuplicatesView {
+    /// Every group in the library, as loaded from the DB. Source of truth for
+    /// `groups`, kept so search can be re-applied without another query.
+    all_groups: Vec<DuplicateGroupSummary>,
+    /// The groups actually on screen: `all_groups` narrowed by `query`. All
+    /// selection state indexes into *this* list.
     pub groups: Vec<DuplicateGroupSummary>,
+    /// Active search text. Empty means "show everything".
+    pub query: String,
     pub groups_state: TableState,
     pub selected_members: Vec<TrackSummary>,
     /// Index (column) of the highlighted member - the keeper candidate. The
@@ -898,7 +913,9 @@ impl DuplicatesView {
     /// An empty view used before any library is opened.
     pub fn empty() -> Self {
         Self {
+            all_groups: Vec::new(),
             groups: Vec::new(),
+            query: String::new(),
             groups_state: TableState::default(),
             selected_members: Vec::new(),
             selected_member: 0,
@@ -909,31 +926,54 @@ impl DuplicatesView {
     }
 
     pub async fn new(pool: &SqlitePool, library_id: i64) -> Result<Self, sqlx::Error> {
-        let groups = db::load_duplicate_groups(pool, library_id).await?;
-        let mut groups_state = TableState::default();
-        let mut selected_member = 0;
-        let selected_members = if !groups.is_empty() {
-            groups_state.select(Some(0));
-            let members =
-                db::load_duplicate_members(pool, groups[0].kind, &groups[0].key, library_id).await?;
-            selected_member = suggest_keeper(&members).unwrap_or(0);
-            members
-        } else {
-            Vec::new()
-        };
-        Ok(Self {
-            groups,
-            groups_state,
-            selected_members,
-            selected_member,
-            focus: DuplicatePane::Groups,
-            column_offset: 0,
-            library_id,
-        })
+        let mut view = Self::empty();
+        view.reload(pool, library_id).await?;
+        Ok(view)
     }
+
+    /// Re-reads the groups from the DB. Only `all_groups` is replaced, so the
+    /// active search text (and the user's place in the list) survives a
+    /// mutation instead of being silently dropped.
     pub async fn reload(&mut self, pool: &SqlitePool, library_id: i64) -> Result<(), sqlx::Error> {
-        *self = Self::new(pool, library_id).await?;
-        Ok(())
+        self.all_groups = db::load_duplicate_groups(pool, library_id).await?;
+        self.library_id = library_id;
+        self.apply_query(pool).await
+    }
+
+    /// Narrows `all_groups` into `groups` using `query`, then re-establishes a
+    /// valid selection (the group list can shrink out from under it). Loading
+    /// the new selection's members is why this needs the pool.
+    pub async fn apply_query(&mut self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        let needle = self.query.trim().to_lowercase();
+        self.groups = self
+            .all_groups
+            .iter()
+            .filter(|group| group_matches(group, &needle))
+            .cloned()
+            .collect();
+
+        if self.groups.is_empty() {
+            self.groups_state.select(None);
+            self.selected_members.clear();
+            self.selected_member = 0;
+            self.column_offset = 0;
+            // Nothing to focus in the members pane, so don't strand focus there.
+            self.focus = DuplicatePane::Groups;
+            return Ok(());
+        }
+
+        // Clamp rather than reset: after resolving a group the user stays put.
+        let idx = self
+            .groups_state
+            .selected()
+            .unwrap_or(0)
+            .min(self.groups.len() - 1);
+        self.select_group(pool, idx).await
+    }
+
+    /// Total groups before search, for the "n of N" header.
+    pub fn total_groups(&self) -> usize {
+        self.all_groups.len()
     }
 
     pub async fn select_group(&mut self, pool: &SqlitePool, idx: usize) -> Result<(), sqlx::Error> {
@@ -991,6 +1031,25 @@ impl DuplicatesView {
         };
         db::skip_duplicate_group(pool, &group.key, group.kind.label(), self.library_id).await
     }
+}
+
+/// Case-insensitive substring match of a search needle against a duplicate
+/// group's tags, plus its shared key so a hash or ISRC can be pasted in
+/// directly. An empty needle matches everything.
+fn group_matches(group: &DuplicateGroupSummary, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let haystacks = [
+        group.title.as_deref(),
+        group.artist.as_deref(),
+        group.album.as_deref(),
+        Some(group.key.as_str()),
+    ];
+    haystacks
+        .into_iter()
+        .flatten()
+        .any(|field| field.to_lowercase().contains(needle))
 }
 
 /// Ranks duplicate-group members and returns the index of the best candidate

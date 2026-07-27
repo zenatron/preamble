@@ -47,17 +47,27 @@ cargo install --git https://github.com/zenatron/preamble.git
 ```
 
 ```
-cargo run -- /path/to/music
+cargo run -- --path /path/to/music
 ```
 
-The path is optional: if omitted, the configured `library_path` is used, and failing that the TUI opens against the existing database.
+## Usage
+
+```
+preamble [OPTIONS]
+
+  -p, --path <PATH>  Library directory to open (or create)
+  -v, --version      Print version and exit
+  -h, --help         Print this help and exit
+```
+
+`--path` is optional: if omitted, the configured `library_path` is used, and failing that the TUI opens against the existing database.
 
 ## Configuration
 
 On first run preamble writes `preamble.toml` with defaults:
 
 ```toml
-# library_path          : default directory scanned when no CLI path is given
+# library_path          : default directory scanned when --path is not given
 # formats               : audio file extensions to scan (lowercase, no dot)
 # scan_concurrency      : files hashed/read in parallel during a scan
 # acoustid_api_key      : optional; prefer the ACOUSTID_API_KEY env var / .env
@@ -74,7 +84,7 @@ quarantine_dir = "quarantine"
 low_bitrate_threshold = 128
 ```
 
-A path given on the command line overrides `library_path`. The AcoustID key is read from the `ACOUSTID_API_KEY` environment variable (or a gitignored `.env`) so it never has to live in the committed config. Logs are written to `preamble.log` (`RUST_LOG` overrides `log_level`).
+A `--path` given on the command line overrides `library_path`. The AcoustID key is read from the `ACOUSTID_API_KEY` environment variable (or a gitignored `.env`) so it never has to live in the committed config. Logs are written to `preamble.log` (`RUST_LOG` overrides `log_level`).
 
 ## TUI
 
@@ -145,7 +155,7 @@ Deletion is never immediate. Pressing `d` **flags** the selected (or highlighted
 
 ## Duplicates
 
-The Duplicates tab lists duplicate **groups** on the left and a transposed tag-by-tag **member comparison** on the right (one column per file). Press `p` to focus the members pane, then move between member columns with `←`/`→`. A suggested keeper is pre-highlighted (`★`) — highest bitrate, then largest file, then most complete tags — which you can override. Press `k` to keep the highlighted member; the rest of the group is flagged into Trash and the resolved group disappears.
+The Duplicates tab lists duplicate **groups** on the left and a transposed tag-by-tag **member comparison** on the right (one column per file). Press `p` to focus the members pane, then move between member columns with `←`/`→`. A suggested keeper is pre-highlighted (`★`) — highest bitrate, then largest file, then most complete tags — which you can override. Press `k` to keep the highlighted member; the rest of the group is flagged into Trash and the resolved group disappears. `/` searches the group list by title, artist, album, or by the shared hash/ISRC key.
 
 Two kinds of groups are surfaced: **hash** groups (byte-identical files) and **ISRC** groups (the same recording across non-identical files, e.g. a FLAC and an MP3). An ISRC group is only shown when it spans more than one distinct file, so it never simply restates a hash group.
 

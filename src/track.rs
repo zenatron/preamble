@@ -322,6 +322,7 @@ impl DuplicateKind {
     }
 }
 
+#[derive(Clone)]
 pub struct DuplicateGroupSummary {
     pub kind: DuplicateKind,
     /// The shared key: a file hash or an ISRC depending on `kind`.
