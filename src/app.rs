@@ -49,7 +49,8 @@ pub struct App {
     pub watch_last_event: std::time::Instant,
     watcher: Option<notify::RecommendedWatcher>,
 
-    pub pending_delete: bool,
+    /// Armed by a first [r] on the start screen; a second press rebuilds.
+    pub pending_rebuild: bool,
     pub pending_purge: bool,
 
     /// Cooperative cancel flag for long-running scans / enrichment.
@@ -151,7 +152,7 @@ impl App {
             watch_last_event: std::time::Instant::now(),
             watcher: None,
 
-            pending_delete: false,
+            pending_rebuild: false,
             pending_purge: false,
 
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -262,6 +263,12 @@ impl App {
         self.properties_scroll = 0;
         self.current_screen = Screens::Start;
         self.needs_redraw = true;
+
+        // Keep watching, but the new library's folder rather than the old one.
+        if self.watch_enabled {
+            self.toggle_watch();
+            self.toggle_watch();
+        }
         Ok(())
     }
 
@@ -360,23 +367,37 @@ impl App {
 
         // Apply a finished background import.
         if let Some(rx) = &mut self.watch_scan_rx {
-            if let Ok(ScanEvent::Done) = rx.try_recv() {
+            use tokio::sync::mpsc::error::TryRecvError;
+            let mut error = None;
+            let finished = loop {
+                match rx.try_recv() {
+                    Ok(ScanEvent::Done) | Err(TryRecvError::Disconnected) => break true,
+                    Ok(ScanEvent::Error(msg)) => error = Some(msg),
+                    Ok(ScanEvent::Progress(..)) => {}
+                    Err(TryRecvError::Empty) => break false,
+                }
+            };
+            if finished {
                 self.watch_scan_rx = None;
                 self.watch_scan_active = false;
                 self.reload().await.ok();
-                self.set_status(StatusLevel::Success, "Watch: library updated.");
+                match error {
+                    Some(msg) => self.set_status(StatusLevel::Error, format!("Watch: {msg}")),
+                    None => self.set_status(StatusLevel::Success, "Watch: library updated."),
+                }
             }
         }
 
         // Kick off a debounced import once the directory settles.
         let idle = self.watch_last_event.elapsed() > std::time::Duration::from_millis(1500);
-        if self.watch_pending && idle && !self.watch_scan_active && self.scan_receiver.is_none() {
+        if self.watch_pending && idle && !self.watch_scan_active && self.scan_receiver.is_none() && !self.is_validating {
             self.watch_pending = false;
             if let Some(path) = self.pending_scan_path.clone() {
                 let (tx, rx) = tokio::sync::mpsc::channel(100);
                 self.watch_scan_rx = Some(rx);
                 self.watch_scan_active = true;
-                let cancel = self.cancel.clone();
+                // Its own flag: Esc on some other operation shouldn't abort it.
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 tokio::spawn(scan_library(
                     self.pool.clone(),
                     self.active_library_id(),
@@ -431,13 +452,12 @@ impl App {
 
     /// Clears the status message once it has been on screen long enough.
     pub fn expire_status(&mut self) {
-        if let Some(msg) = &self.status_message {
-            if msg.at.elapsed() > std::time::Duration::from_secs(6) {
+        if let Some(msg) = &self.status_message
+            && msg.at.elapsed() > std::time::Duration::from_secs(6) {
                 self.status_message = None;
                 // Repaint once to actually erase the message from the screen.
                 self.needs_redraw = true;
             }
-        }
     }
 
     /// Refreshes just the summary counts shown in the tab badges. Cheap (a
@@ -491,6 +511,87 @@ impl App {
         self.properties_scroll = 0;
         self.needs_redraw = true;
 
+        Ok(())
+    }
+
+    /// Drains progress from the background scan / validate / enrich workers and
+    /// applies any that finished. A worker that exits without sending `Done`
+    /// (it errored, or panicked) closes its channel; that's treated as finished
+    /// too, so the UI is never stranded on the progress screen.
+    pub async fn pump_workers(&mut self) -> Result<(), sqlx::Error> {
+        use tokio::sync::mpsc::error::TryRecvError;
+
+        if let Some(rx) = &mut self.scan_receiver {
+            let mut worker_error = None;
+            let finished = loop {
+                match rx.try_recv() {
+                    Ok(ScanEvent::Progress(n, total)) => self.scan_progress = Some((n, total)),
+                    Ok(ScanEvent::Error(msg)) => worker_error = Some(msg),
+                    Ok(ScanEvent::Done) => break Some(true),
+                    Err(TryRecvError::Empty) => break None,
+                    Err(TryRecvError::Disconnected) => break Some(false),
+                }
+            };
+            if let Some(clean) = finished {
+                self.scan_receiver = None;
+                self.scan_progress = None;
+                self.current_screen = Screens::Start;
+                self.reload().await?;
+                if !clean && worker_error.is_none() {
+                    worker_error =
+                        Some(format!("{} stopped unexpectedly; see preamble.log.", self.scan_label));
+                }
+            }
+            if let Some(msg) = worker_error {
+                self.set_status(StatusLevel::Error, msg);
+            }
+        }
+
+        if let Some(rx) = &mut self.validating_receiver {
+            use tokio::sync::oneshot::error::TryRecvError;
+            let finished = match rx.try_recv() {
+                Ok(ValidateEvent::Done) => Some(None),
+                Ok(ValidateEvent::Error(msg)) => Some(Some(msg)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Closed) => {
+                    Some(Some("Validation stopped unexpectedly; see preamble.log.".into()))
+                }
+            };
+            if let Some(error) = finished {
+                self.validating_receiver = None;
+                self.is_validating = false;
+                self.reload().await?;
+                match error {
+                    Some(msg) => self.set_status(StatusLevel::Error, msg),
+                    None => self.set_status(StatusLevel::Success, "Paths validated."),
+                }
+            }
+        }
+
+        if let Some(rx) = &mut self.enrich_receiver {
+            let mut last_error = None;
+            let finished = loop {
+                match rx.try_recv() {
+                    Ok(EnrichEvent::Progress(n, total)) => self.enrich_progress = Some((n, total)),
+                    Ok(EnrichEvent::Error(msg)) => last_error = Some(msg),
+                    Ok(EnrichEvent::Done) => break true,
+                    Err(TryRecvError::Empty) => break false,
+                    Err(TryRecvError::Disconnected) => {
+                        last_error = Some("Enrichment stopped unexpectedly; see preamble.log.".into());
+                        break true;
+                    }
+                }
+            };
+            if let Some(msg) = last_error {
+                self.set_status(StatusLevel::Warning, msg);
+            }
+            if finished {
+                self.enrich_receiver = None;
+                self.enrich_progress = None;
+                self.is_enriching = false;
+                self.reload().await?;
+            }
+        }
         Ok(())
     }
 
@@ -627,20 +728,18 @@ impl Filter {
 
     /// Returns true if the track passes all active facets.
     pub fn matches(&self, t: &TrackSummary) -> bool {
-        if let Some(fmt) = &self.format {
-            if t.file_format
+        if let Some(fmt) = &self.format
+            && t.file_format
                 .as_deref()
                 .map(|f| f.eq_ignore_ascii_case(fmt))
                 != Some(true)
             {
                 return false;
             }
-        }
-        if let Some(min) = self.min_bitrate {
-            if t.bitrate.unwrap_or(0) < min {
+        if let Some(min) = self.min_bitrate
+            && t.bitrate.unwrap_or(0) < min {
                 return false;
             }
-        }
         if self.no_isrc && t.isrc.as_deref().map(|s| !s.is_empty()).unwrap_or(false) {
             return false;
         }

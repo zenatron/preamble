@@ -304,7 +304,9 @@ async def _handle_export(args: dict) -> list[TextContent]:
     if lib_id is None:
         return [TextContent(type="text", text="No libraries found. Open preamble first.")]
     fmt = args.get("format", "json")
-    data = _get("/api/export", library_id=lib_id, format=fmt)
+    r = client.post(f"{API_BASE}/api/export", params={"library_id": lib_id, "format": fmt})
+    r.raise_for_status()
+    data = r.json()
     return [TextContent(type="text", text=json.dumps(data, indent=2))]
 
 

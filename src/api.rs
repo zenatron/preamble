@@ -1,21 +1,24 @@
 // src/api.rs
 //
 // Localhost HTTP API so an MCP server (or any tool) can query the music
-// library while preamble is running. All endpoints are read-only currently
+// library while preamble is running. Endpoints only read the library; the one
+// that writes anything (an export file) is a POST.
 //
 // The server only starts when PREAMBLE_API_PORT is set so it never interferes
-// with normal interactive use.
+// with normal interactive use. It binds to 127.0.0.1 and sends no CORS
+// headers, so web pages in a browser can't read its responses, and it rejects
+// requests whose Host isn't localhost, which stops DNS-rebinding pages from
+// reaching it under some other name.
 
 use crate::db;
 use crate::track::TrackInfo;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::net::SocketAddr;
-use tower_http::cors::{Any, CorsLayer};
 
 // app state
 
@@ -350,8 +353,18 @@ async fn get_track(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
+    // TrackInfo doesn't carry the health column; fetch it alongside.
+    let health_issue: Option<String> =
+        sqlx::query_scalar("SELECT health_issue FROM tracks WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .flatten();
 
-    Ok(Json(TrackResponse::from(track)))
+    let mut response = TrackResponse::from(track);
+    response.health_issue = health_issue;
+    Ok(Json(response))
 }
 
 async fn list_duplicates(
@@ -409,17 +422,41 @@ async fn export_tracks(
 }
 
 
+/// Rejects requests whose `Host` header isn't a loopback name. A page served
+/// from an attacker's domain that re-resolves to 127.0.0.1 (DNS rebinding)
+/// still sends its own domain as Host, so it gets a 403 here.
+async fn require_local_host(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let host = req
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if is_loopback_host(host) {
+        Ok(next.run(req).await)
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    // Strip an optional port; IPv6 literals are bracketed (`[::1]:9185`).
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host.rsplit_once(':').map_or(host, |(name, _)| name)
+    };
+    matches!(name, "127.0.0.1" | "localhost" | "::1")
+}
+
 // server starting
 
 /// Starts the HTTP API server on `127.0.0.1:{port}`. Binds as a background
 /// tokio task so it doesn't block the TUI. Returns the bound address.
 pub async fn start(pool: SqlitePool, port: u16) -> std::io::Result<SocketAddr> {
     let state = ApiState { pool };
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
 
     let app = axum::Router::new()
         .route("/api/health", get(health))
@@ -428,8 +465,8 @@ pub async fn start(pool: SqlitePool, port: u16) -> std::io::Result<SocketAddr> {
         .route("/api/tracks", get(list_tracks))
         .route("/api/tracks/{id}", get(get_track))
         .route("/api/duplicates", get(list_duplicates))
-        .route("/api/export", get(export_tracks))
-        .layer(cors)
+        .route("/api/export", post(export_tracks))
+        .layer(axum::middleware::from_fn(require_local_host))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -451,4 +488,19 @@ pub fn port_from_env() -> Option<u16> {
     std::env::var("PREAMBLE_API_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback_host;
+
+    #[test]
+    fn only_loopback_hosts_pass() {
+        for ok in ["127.0.0.1:9185", "localhost:9185", "localhost", "[::1]:9185"] {
+            assert!(is_loopback_host(ok), "{ok}");
+        }
+        for bad in ["evil.example:9185", "127.0.0.1.evil.example", "", "[::2]:1"] {
+            assert!(!is_loopback_host(bad), "{bad}");
+        }
+    }
 }

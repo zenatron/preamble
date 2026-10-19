@@ -23,7 +23,6 @@ tracing-appender = "0.2"
 notify = "6"
 csv = "1"
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
 
 # Force bundled SQLite for cross-compilation (dist CI images may lack system sqlite3-dev)
 [dependencies.libsqlite3-sys]

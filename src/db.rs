@@ -197,17 +197,23 @@ pub async fn load_existing_hashes(
     Ok(rows.into_iter().flatten().collect())
 }
 
-/// inserts a single track into the Sqlite DB keeping the TX alive
+/// True when `e` is a UNIQUE/PRIMARY KEY constraint failure (the row exists).
+pub fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db) if db.is_unique_violation())
+}
+
+/// Inserts a single track inside the caller's transaction and returns its new
+/// row id (`None` when the track was skipped).
 pub async fn insert_track(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track: &TrackInfo,
     library_id: i64,
-) -> Result<(), sqlx::Error> {
+) -> Result<Option<i64>, sqlx::Error> {
     // Filenames aren't guaranteed UTF-8 on Linux; skip rather than panic on the
     // rare non-UTF-8 path so one odd file can't abort an entire scan.
     let Some(path) = track.file_path.to_str() else {
         tracing::warn!(path = ?track.file_path, "skipping track with non-UTF-8 path");
-        return Ok(());
+        return Ok(None);
     };
     sqlx::query!(
         r#"
@@ -320,7 +326,13 @@ pub async fn insert_track(
     )
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(Some(tx_last_rowid(tx).await?))
+}
+
+async fn tx_last_rowid(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
+        .fetch_one(&mut **tx)
+        .await
 }
 
 /// Maps an anonymous sqlx record (with the standard TrackSummary column set)
@@ -786,51 +798,47 @@ pub async fn truncate_tracks(pool: &SqlitePool, library_id: i64) -> Result<(), s
     Ok(())
 }
 
-/// Deletes a single track from a provided database id
-pub async fn delete_single_track(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
-    sqlx::query!(r#"DELETE FROM tracks WHERE id = ?"#, id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 // Undo log
 
-/// Records a reversible action on the undo stack.
+/// Records a reversible action on `library_id`'s undo stack.
 pub async fn log_action(
     pool: &SqlitePool,
+    library_id: i64,
     kind: &str,
     summary: &str,
     action: &crate::undo::UndoAction,
 ) -> Result<(), sqlx::Error> {
     let payload = serde_json::to_string(action).unwrap_or_default();
-    sqlx::query!(
-        r#"INSERT INTO action_log (kind, summary, payload) VALUES (?, ?, ?)"#,
-        kind,
-        summary,
-        payload
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO action_log (kind, summary, payload, library_id) VALUES (?, ?, ?, ?)")
+        .bind(kind)
+        .bind(summary)
+        .bind(payload)
+        .bind(library_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-/// Pops the most recent not-yet-undone action (without marking it undone).
+/// Peeks the most recent not-yet-undone action in `library_id` (without
+/// marking it undone). Actions logged before undo was scoped per library have
+/// no library and are never offered, since we can't tell where they belong.
 pub async fn take_last_undo(
     pool: &SqlitePool,
+    library_id: i64,
 ) -> Result<Option<(i64, String, crate::undo::UndoAction)>, Box<dyn std::error::Error + Send + Sync>>
 {
-    let row = sqlx::query!(
-        r#"SELECT id AS "id!", summary, payload FROM action_log
-        WHERE undone = 0 ORDER BY id DESC LIMIT 1"#
+    let row: Option<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, summary, payload FROM action_log
+        WHERE undone = 0 AND library_id = ? ORDER BY id DESC LIMIT 1",
     )
+    .bind(library_id)
     .fetch_optional(pool)
     .await?;
 
     match row {
-        Some(r) => {
-            let action: crate::undo::UndoAction = serde_json::from_str(&r.payload)?;
-            Ok(Some((r.id, r.summary, action)))
+        Some((id, summary, payload)) => {
+            let action: crate::undo::UndoAction = serde_json::from_str(&payload)?;
+            Ok(Some((id, summary, action)))
         }
         None => Ok(None),
     }
@@ -843,17 +851,106 @@ pub async fn mark_undone(pool: &SqlitePool, log_id: i64) -> Result<(), sqlx::Err
     Ok(())
 }
 
-/// Re-inserts a full track row (used when undoing a purge). Wraps the existing
-/// transaction-based insert in its own transaction.
-pub async fn insert_track_pool(
+/// Re-inserts purged tracks (undoing a purge) in one transaction, each under
+/// its original id, so older undo entries that reference that id keep working,
+/// and flagged for deletion again. A track whose path already has a row (it was
+/// rescanned while quarantined) is skipped. Returns how many were inserted.
+pub async fn restore_tracks(
     pool: &SqlitePool,
-    track: &TrackInfo,
-    library_id: i64,
+    tracks: &[(&TrackInfo, i64)],
+    marked: bool,
+) -> Result<usize, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let mut restored = 0;
+    for &(track, library_id) in tracks {
+        let new_id = match insert_track(&mut tx, track, library_id).await {
+            Ok(Some(id)) => id,
+            Ok(None) => continue,
+            Err(e) if is_unique_violation(&e) => continue,
+            Err(e) => return Err(e),
+        };
+        // One UPDATE sets both, so the FTS triggers re-index the row once.
+        let id = track.id.unwrap_or(new_id);
+        let updated = sqlx::query("UPDATE tracks SET id = ?, marked_for_deletion = ? WHERE id = ?")
+            .bind(id)
+            .bind(marked)
+            .bind(new_id)
+            .execute(&mut *tx)
+            .await;
+        match updated {
+            Ok(_) => {}
+            // The old id is somehow taken: keep the new one.
+            Err(e) if is_unique_violation(&e) => {
+                sqlx::query("UPDATE tracks SET marked_for_deletion = ? WHERE id = ?")
+                    .bind(marked)
+                    .bind(new_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            Err(e) => return Err(e),
+        }
+        restored += 1;
+    }
+    tx.commit().await?;
+    Ok(restored)
+}
+
+/// Deletes many track rows in one transaction.
+pub async fn delete_tracks(pool: &SqlitePool, ids: &[i64]) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for id in ids {
+        sqlx::query!(r#"DELETE FROM tracks WHERE id = ?"#, id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
+}
+
+/// Sets or clears the deletion flag on many tracks in one transaction.
+pub async fn set_marked_many(pool: &SqlitePool, ids: &[i64], marked: bool) -> Result<(), sqlx::Error> {
+    let flag = if marked { 1 } else { 0 };
+    let mut tx = pool.begin().await?;
+    for id in ids {
+        sqlx::query!(
+            r#"UPDATE tracks SET marked_for_deletion = ? WHERE id = ?"#,
+            flag,
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// Sets per-track statuses in one transaction.
+pub async fn set_status_many<S: AsRef<str>>(
+    pool: &SqlitePool,
+    items: &[(i64, S)],
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    insert_track(&mut tx, track, library_id).await?;
-    tx.commit().await?;
-    Ok(())
+    for (id, status) in items {
+        let status = status.as_ref();
+        sqlx::query!(
+            r#"UPDATE tracks SET status = ? WHERE id = ?"#,
+            status,
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// Puts tracks flagged `missing` whose file has reappeared back in the queue.
+pub async fn clear_missing(pool: &SqlitePool, ids: &[i64]) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for id in ids {
+        sqlx::query("UPDATE tracks SET status = 'pending' WHERE id = ? AND status = 'missing'")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
 }
 
 // Trash workflow
@@ -904,24 +1001,6 @@ pub async fn load_marked_tracks(
         .map(|row| row_to_summary!(row))
         .collect()),
     }
-}
-
-/// Flags or unflags a single track for deletion. Non-destructive - the file is
-/// only removed later, during an explicit purge.
-pub async fn set_marked_for_deletion(
-    pool: &SqlitePool,
-    id: i64,
-    marked: bool,
-) -> Result<(), sqlx::Error> {
-    let flag = if marked { 1 } else { 0 };
-    sqlx::query!(
-        r#"UPDATE tracks SET marked_for_deletion = ? WHERE id = ?"#,
-        flag,
-        id
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 /// Flags every member of a duplicate group EXCEPT the chosen keeper. Used when
@@ -1152,14 +1231,13 @@ pub async fn apply_enrichment(
 
 /// Builds the duplicate-group list shown in the Duplicates tab. Two kinds of
 /// groups are produced, matching the scanner's own detection layers:
-
-///   * Hash groups  - byte-for-byte identical files (same BLAKE3 hash).
-///   * ISRC groups  - the same recording across non-identical files (e.g. a
-///                    FLAC and an MP3 of the same track). To avoid restating a
-///                    hash group, an ISRC group is only included when its
-///                    members span more than one distinct file (different or
-///                    missing hashes), i.e. it captures something the hash
-///                    layer can't.
+///
+/// * Hash groups - byte-for-byte identical files (same BLAKE3 hash).
+/// * ISRC groups - the same recording across non-identical files (e.g. a FLAC
+///   and an MP3 of the same track). To avoid restating a hash group, an ISRC
+///   group is only included when its members span more than one distinct file
+///   (different or missing hashes), i.e. it captures something the hash layer
+///   can't.
 pub async fn load_duplicate_groups(
     pool: &SqlitePool,
     library_id: i64,

@@ -13,7 +13,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table, TableState};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -225,17 +225,66 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
-/// The preamble wordmark, shared by the picker / create / start screens.
-fn preamble_logo() -> ratatui::text::Text<'static> {
-    ratatui::text::Text::from(vec![
-        Line::from("                                _     _      "),
-        Line::from(" _ __  _ __ ___  __ _ _ __ ___ | |__ | | ___ "),
-        Line::from("| '_ \\| '__/ _ \\/ _` | '_ ` _ \\| '_ \\| |/ _ \\"),
-        Line::from("| |_) | | |  __/ (_| | | | | | | |_) | |  __/"),
-        Line::from("| .__/|_| \\___/\\___|_|_| |_| |_|_.__/|_|\\___|"),
-        Line::from("|_|                                          "),
-    ])
-    .light_red()
+/// Rows taken by `preamble_logo`.
+const LOGO_HEIGHT: u16 = 4;
+
+/// The preamble mark, shared by the picker / create / start screens: a vinyl
+/// record beside a half-block wordmark, sitting on an EQ-bar baseline that
+/// fades warm to cool. Narrow terminals get the wordmark alone, then plain text.
+fn preamble_logo(width: u16) -> ratatui::text::Text<'static> {
+    use ratatui::style::Color;
+
+    const RECORD: [&str; 3] = [" ▄▀▀▀▄ ", "█  ●  █", " ▀▄▄▄▀ "];
+    const WORD: [&str; 3] = [
+        "█▀▀▀▄ █▀▀▀▄ █▀▀▀▀ ▄▀▀▀▄ █▄ ▄█ █▀▀▀▄ █     █▀▀▀▀",
+        "█▄▄▄▀ █▀█▀  █▀▀▀  █▄▄▄█ █ ▀ █ █▀▀▀▄ █     █▀▀▀ ",
+        "█     █  ▀▄ █▄▄▄▄ █   █ █   █ █▄▄▄▀ █▄▄▄▄ █▄▄▄▄",
+    ];
+    const EQ: &str = "▁▂▃▅▆▇▆▅▃▂▁▂▃▄▅▆▅▄▃▂▁▂▃▅▇█▇▅▃▂▁▂▃▄▅▄▃▂▁▂▃▅▆▇▆▅▃▂▁▂▃▄▃▂▁▂▃▂";
+    const GAP: &str = "   ";
+    let word_width = WORD[0].chars().count();
+    let full_width = RECORD[0].chars().count() + GAP.len() + word_width;
+
+    let wordmark = Style::default().light_red().bold();
+    let record = Style::default().gray();
+    let label = Style::default().light_cyan();
+    let mut lines: Vec<Line> = if (width as usize) >= full_width {
+        (0..3)
+            .map(|i| {
+                let mut spans = if i == 1 {
+                    vec![
+                        Span::styled("█  ", record),
+                        Span::styled("●", label),
+                        Span::styled("  █", record),
+                    ]
+                } else {
+                    vec![Span::styled(RECORD[i], record)]
+                };
+                spans.push(Span::raw(GAP));
+                spans.push(Span::styled(WORD[i], wordmark));
+                Line::from(spans)
+            })
+            .collect()
+    } else if (width as usize) >= word_width {
+        WORD.iter().map(|w| Line::styled(*w, wordmark)).collect()
+    } else {
+        return ratatui::text::Text::from(vec![
+            Line::raw(""),
+            Line::styled("p r e a m b l e", wordmark),
+        ]);
+    };
+
+    // Baseline: one bar per column, coloured along a red -> amber -> cyan ramp.
+    let span = if (width as usize) >= full_width { full_width } else { word_width };
+    let ramp = [Color::LightRed, Color::Red, Color::Yellow, Color::LightYellow, Color::Cyan, Color::LightCyan];
+    let bars: Vec<Span> = EQ
+        .chars()
+        .take(span)
+        .enumerate()
+        .map(|(i, c)| Span::styled(c.to_string(), Style::default().fg(ramp[i * ramp.len() / span])))
+        .collect();
+    lines.push(Line::from(bars));
+    ratatui::text::Text::from(lines)
 }
 
 /// Library picker: lists known libraries plus a trailing "Create new..." row.
@@ -243,7 +292,7 @@ fn draw_picker_screen(f: &mut Frame, app: &mut App, area: Rect) {
     use ratatui::layout::Alignment;
     let sections = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(6), // title
+        Constraint::Length(LOGO_HEIGHT), // title
         Constraint::Length(2), // subtitle
         Constraint::Min(6),    // list
         Constraint::Length(2), // hints
@@ -251,7 +300,10 @@ fn draw_picker_screen(f: &mut Frame, app: &mut App, area: Rect) {
     ])
     .split(area);
 
-    f.render_widget(preamble_logo().alignment(Alignment::Center), sections[1]);
+    f.render_widget(
+        preamble_logo(sections[1].width).alignment(Alignment::Center),
+        sections[1],
+    );
     f.render_widget(
         Paragraph::new("Select a library")
             .alignment(Alignment::Center)
@@ -305,7 +357,7 @@ fn draw_create_library_screen(f: &mut Frame, app: &mut App, area: Rect) {
     use ratatui::layout::Alignment;
     let sections = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(6), // title
+        Constraint::Length(LOGO_HEIGHT), // title
         Constraint::Length(2), // subtitle
         Constraint::Length(6), // form
         Constraint::Length(2), // hints
@@ -313,7 +365,10 @@ fn draw_create_library_screen(f: &mut Frame, app: &mut App, area: Rect) {
     ])
     .split(area);
 
-    f.render_widget(preamble_logo().alignment(Alignment::Center), sections[1]);
+    f.render_widget(
+        preamble_logo(sections[1].width).alignment(Alignment::Center),
+        sections[1],
+    );
     f.render_widget(
         Paragraph::new("Create a new library")
             .alignment(Alignment::Center)
@@ -375,7 +430,7 @@ fn draw_create_library_screen(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
     let sections = Layout::vertical([
         Constraint::Fill(1),   // top padding
-        Constraint::Length(6), // title
+        Constraint::Length(LOGO_HEIGHT), // title
         Constraint::Length(1), // version
         Constraint::Length(6), // stats
         Constraint::Length(2), // path
@@ -384,15 +439,7 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
     ])
     .split(area);
 
-    let title = ratatui::text::Text::from(vec![
-        Line::from("                                _     _      "),
-        Line::from(" _ __  _ __ ___  __ _ _ __ ___ | |__ | | ___ "),
-        Line::from("| '_ \\| '__/ _ \\/ _` | '_ ` _ \\| '_ \\| |/ _ \\"),
-        Line::from("| |_) | | |  __/ (_| | | | | | | |_) | |  __/"),
-        Line::from("| .__/|_| \\___/\\___|_|_| |_| |_|_.__/|_|\\___|"),
-        Line::from("|_|                                          "),
-    ])
-    .light_red();
+    let title = preamble_logo(sections[1].width);
 
     f.render_widget(
         title.alignment(ratatui::layout::Alignment::Center),
@@ -464,9 +511,7 @@ fn draw_start_screen(f: &mut Frame, app: &mut App, area: Rect) {
         sections[4],
     );
     f.render_widget(
-        Paragraph::new(format!(
-            "[s] Scan new   [u] Rescan changed   [r] Fresh scan (rebuilds DB)\n[v] Validate paths   [h] Health check   [L] Switch library\n[enter] View Library    [q] Quit"
-        )).style(Style::new().add_modifier(Modifier::BOLD))
+        Paragraph::new("[s] Scan new   [u] Rescan changed   [r] Fresh scan (rebuilds DB, asks first)\n[v] Validate paths   [h] Health check   [L] Switch library\n[enter] View Library    [q] Quit".to_string()).style(Style::new().add_modifier(Modifier::BOLD))
         .alignment(ratatui::layout::Alignment::Center),
         sections[5],
     );
@@ -640,6 +685,7 @@ async fn purge_marked(app: &mut App) {
     std::fs::create_dir_all(&qdir).ok();
 
     let mut restored = Vec::new();
+    let mut failed = 0usize;
     for (id, path) in targets {
         // Capture the full row so the purge can be reversed.
         let Ok(Some(track)) = db::load_track_full(&app.pool, id).await else {
@@ -651,8 +697,17 @@ async fn purge_marked(app: &mut App) {
             .unwrap_or_else(|| id.to_string());
         let qpath = qdir.join(format!("{id}_{filename}"));
 
-        if crate::undo::move_file(&path, &qpath).is_ok() {
-            db::delete_single_track(&app.pool, id).await.ok();
+        // A track whose file is already gone just loses its row; undo puts the
+        // row back. Otherwise the file must reach quarantine before the row goes.
+        let moved = if path.exists() {
+            crate::undo::move_file(&path, &qpath)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = moved {
+            tracing::warn!(path = %path.display(), error = %e, "purge: could not quarantine");
+            failed += 1;
+        } else {
             restored.push(crate::undo::RestoredTrack {
                 track,
                 original_path: path,
@@ -662,11 +717,22 @@ async fn purge_marked(app: &mut App) {
         }
     }
 
+    let ids: Vec<i64> = restored.iter().filter_map(|r| r.track.id).collect();
+    if let Err(e) = db::delete_tracks(&app.pool, &ids).await {
+        // Rows are intact, so put the files back where the rows say they are.
+        for r in &restored {
+            crate::undo::move_file(&r.quarantine_path, &r.original_path).ok();
+        }
+        app.set_status(StatusLevel::Error, format!("Purge failed: {e}"));
+        return;
+    }
+
     let purged = restored.len();
     if purged > 0 {
         let action = crate::undo::UndoAction::RestoreRows { tracks: restored };
         db::log_action(
             &app.pool,
+            app.active_library_id(),
             "purge",
             &format!("Purged {purged} track(s)"),
             &action,
@@ -675,7 +741,12 @@ async fn purge_marked(app: &mut App) {
         .ok();
     }
     app.reload().await.ok();
-    if purged > 0 {
+    if failed > 0 {
+        app.set_status(
+            StatusLevel::Warning,
+            format!("Purged {purged} track(s); {failed} couldn't be moved (see preamble.log)."),
+        );
+    } else if purged > 0 {
         app.set_status(
             StatusLevel::Success,
             format!("Purged {purged} track(s) to quarantine ([z] to undo)."),
@@ -985,11 +1056,10 @@ async fn handle_picker_navigation(app: &mut App, key: KeyEvent) {
                 app.new_lib_name.clear();
                 app.new_lib_focus = app::NewLibField::Path;
                 app.current_screen = app::Screens::CreateLibrary;
-            } else if let Some(lib) = app.libraries.get(app.picker_index).cloned() {
-                if let Err(e) = app.open_library(lib).await {
+            } else if let Some(lib) = app.libraries.get(app.picker_index).cloned()
+                && let Err(e) = app.open_library(lib).await {
                     app.set_status(StatusLevel::Error, format!("Open failed: {e}"));
                 }
-            }
         }
         _ => {}
     }
@@ -1085,9 +1155,34 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // One library operation at a time: overlapping a scan with a health check
+    // or a background watch import would race on the same rows.
+    let starts_operation = matches!(
+        key.code,
+        KeyCode::Char('s' | 'h' | 'u' | 'r' | 'v')
+    );
+    if starts_operation && (app.is_busy() || app.is_validating) {
+        app.set_status(StatusLevel::Warning, "Another operation is still running.");
+        return;
+    }
+
+    // [r] wipes this library's rows (flags, enrichment, edits) before
+    // rescanning, so it needs a second press to confirm.
+    if key.code != KeyCode::Char('r') {
+        app.pending_rebuild = false;
+    }
+    if key.code == KeyCode::Char('r') && !app.pending_rebuild {
+        app.pending_rebuild = true;
+        app.set_status(
+            StatusLevel::Warning,
+            "Fresh scan deletes this library's flags, enrichment and edits. Press [r] again to confirm.",
+        );
+        return;
+    }
+
     if key.code == KeyCode::Char('s') {
         if let Some(ref path) = app.pending_scan_path {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let (tx, rx) = tokio::sync::mpsc::channel(100);
             let cancel = app.begin_cancelable();
             app.scan_receiver = Some(rx);
             app.scan_label = "Scanning";
@@ -1142,8 +1237,12 @@ async fn handle_start_navigation(app: &mut App, key: KeyEvent) {
     }
 
     if key.code == KeyCode::Char('r') {
+        app.pending_rebuild = false;
         if let Some(ref path) = app.pending_scan_path {
-            db::truncate_tracks(&app.pool, library_id).await.ok();
+            if let Err(e) = db::truncate_tracks(&app.pool, library_id).await {
+                app.set_status(StatusLevel::Error, format!("Fresh scan failed: {e}"));
+                return;
+            }
             let (tx, rx) = tokio::sync::mpsc::channel::<ScanEvent>(100);
             let cancel = app.begin_cancelable();
             app.scan_receiver = Some(rx);
@@ -1265,10 +1364,11 @@ async fn handle_export_mode(app: &mut App, key: KeyEvent) {
     let label = app.tabs[app.current_tab].label;
     let tracks = &app.tabs[app.current_tab].tracks;
 
-    let result: Option<(
+    type ExportOutcome = (
         std::path::PathBuf,
         Result<(), Box<dyn std::error::Error + Send + Sync>>,
-    )> = match key.code {
+    );
+    let result: Option<ExportOutcome> = match key.code {
         KeyCode::Esc => {
             app.export_mode = false;
             return;
@@ -1461,7 +1561,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
 
     // [z] undo the most recent reversible action.
     if key.code == KeyCode::Char('z') {
-        match db::take_last_undo(&app.pool).await {
+        match db::take_last_undo(&app.pool, app.active_library_id()).await {
             Ok(Some((log_id, summary, action))) => match action.apply(&app.pool).await {
                 Ok(_) => {
                     db::mark_undone(&app.pool, log_id).await.ok();
@@ -1558,7 +1658,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
             match app.duplicates.focus {
                 app::DuplicatePane::Groups => {
                     let cur = app.duplicates.groups_state.selected().unwrap_or(0);
-                    let new_idx = (cur.saturating_sub(1)).max(0);
+                    let new_idx = cur.saturating_sub(1);
                     if new_idx != cur {
                         let pool = app.pool.clone();
                         app.duplicates.select_group(&pool, new_idx).await.ok();
@@ -1711,8 +1811,9 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
             "Duplicates" => {}
             _ => {
                 let ids = target_ids(&app.tabs[app.current_tab]);
-                for id in &ids {
-                    db::set_marked_for_deletion(&app.pool, *id, true).await.ok();
+                if let Err(e) = db::set_marked_many(&app.pool, &ids, true).await {
+                    app.set_status(StatusLevel::Error, format!("Flag failed: {e}"));
+                    return;
                 }
                 if !ids.is_empty() {
                     let n = ids.len();
@@ -1720,7 +1821,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                         ids: ids.clone(),
                         value: false,
                     };
-                    db::log_action(&app.pool, "flag", &format!("Flagged {n} track(s)"), &action)
+                    db::log_action(&app.pool, app.active_library_id(), "flag", &format!("Flagged {n} track(s)"), &action)
                         .await
                         .ok();
                     app.reload().await.ok();
@@ -1739,10 +1840,9 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
         match app.tabs[app.current_tab].label {
             "Trash" => {
                 let ids = target_ids(&app.tabs[app.current_tab]);
-                for id in &ids {
-                    db::set_marked_for_deletion(&app.pool, *id, false)
-                        .await
-                        .ok();
+                if let Err(e) = db::set_marked_many(&app.pool, &ids, false).await {
+                    app.set_status(StatusLevel::Error, format!("Restore failed: {e}"));
+                    return;
                 }
                 if !ids.is_empty() {
                     let action = crate::undo::UndoAction::SetMarked {
@@ -1751,6 +1851,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                     };
                     db::log_action(
                         &app.pool,
+                        app.active_library_id(),
                         "restore",
                         &format!("Restored {} track(s)", ids.len()),
                         &action,
@@ -1768,21 +1869,22 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                 // Capture previous statuses, then reset to pending.
                 let tab = &app.tabs[app.current_tab];
                 let ids = target_ids(tab);
+                let wanted: std::collections::HashSet<i64> = ids.iter().copied().collect();
                 let items: Vec<(i64, String)> = tab
                     .tracks
                     .iter()
-                    .filter(|t| t.id.map(|id| ids.contains(&id)).unwrap_or(false))
-                    .filter_map(|t| t.id.map(|id| (id, t.status.clone())))
+                    .filter_map(|t| t.id.filter(|id| wanted.contains(id)).map(|id| (id, t.status.clone())))
                     .collect();
-                for id in &ids {
-                    db::update_track_status(&app.pool, *id, "pending")
-                        .await
-                        .ok();
+                let requeue: Vec<(i64, &str)> = ids.iter().map(|&id| (id, "pending")).collect();
+                if let Err(e) = db::set_status_many(&app.pool, &requeue).await {
+                    app.set_status(StatusLevel::Error, format!("Retry failed: {e}"));
+                    return;
                 }
                 if !ids.is_empty() {
                     let action = crate::undo::UndoAction::SetStatus { items };
                     db::log_action(
                         &app.pool,
+                        app.active_library_id(),
                         "retry",
                         &format!("Re-queued {} track(s)", ids.len()),
                         &action,
@@ -1806,8 +1908,8 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
     if key.code == KeyCode::Char('k') {
         if app.tabs[app.current_tab].label == "Duplicates" {
             let pool = app.pool.clone();
-            if let Ok(flagged) = app.duplicates.keep_selected(&pool).await {
-                if !flagged.is_empty() {
+            if let Ok(flagged) = app.duplicates.keep_selected(&pool).await
+                && !flagged.is_empty() {
                     let n = flagged.len();
                     let action = crate::undo::UndoAction::SetMarked {
                         ids: flagged,
@@ -1815,6 +1917,7 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                     };
                     db::log_action(
                         &app.pool,
+                        app.active_library_id(),
                         "keep",
                         &format!("Resolved duplicate ({n} flagged)"),
                         &action,
@@ -1822,7 +1925,6 @@ async fn handle_main_navigation(app: &mut App, key: KeyEvent) {
                     .await
                     .ok();
                 }
-            }
             app.reload().await.ok();
         }
         return;
@@ -2031,7 +2133,7 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    if active_tab_data.tracks.len() == 0 {
+    if active_tab_data.tracks.is_empty() {
         f.render_widget(
             Paragraph::new(format!("No {} Tracks Found", active_tab_data.label)).light_magenta(),
             area,
@@ -2039,7 +2141,28 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let items = active_tab_data.tracks.iter().map(|i| {
+    // Only build rows for the visible window: a frame then costs the same at
+    // 100 tracks or 100k. The offset is kept on the tab's real state (mouse
+    // hit-testing reads it) and the table renders a window-relative copy.
+    let total = active_tab_data.tracks.len();
+    let visible = area.height.saturating_sub(4).max(1) as usize; // borders + header + margin
+    let selected = active_tab_data.state.selected().map(|s| s.min(total - 1));
+    if selected.is_some() {
+        active_tab_data.state.select(selected);
+    }
+    let mut offset = active_tab_data.state.offset().min(total - 1);
+    if let Some(sel) = selected {
+        if sel < offset {
+            offset = sel;
+        } else if sel >= offset + visible {
+            offset = sel + 1 - visible;
+        }
+    }
+    *active_tab_data.state.offset_mut() = offset;
+    let end = (offset + visible).min(total);
+    let mut window_state = TableState::default().with_selected(selected.map(|s| s - offset));
+
+    let items = active_tab_data.tracks[offset..end].iter().map(|i| {
         let row = Row::new(vec![
             Cell::new(if i.is_selected { "[X]" } else { "[ ]" }),
             Cell::new(i.title.as_deref().unwrap_or("Unknown")),
@@ -2134,10 +2257,9 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
         .bottom_margin(1),
     );
 
-    f.render_stateful_widget(list, area, &mut active_tab_data.state);
+    f.render_stateful_widget(list, area, &mut window_state);
 
     // Vertical scrollbar reflecting the selection position within the list.
-    let total = active_tab_data.tracks.len();
     if total > area.height.saturating_sub(3) as usize {
         let mut sb_state = ratatui::widgets::ScrollbarState::new(total)
             .position(active_tab_data.state.selected().unwrap_or(0));
@@ -2696,6 +2818,10 @@ fn draw_duplicate_members_grid(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(table, area);
 }
+
+#[cfg(test)]
+#[path = "stress_tests.rs"]
+mod stress_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1,8 +1,13 @@
 # preamble
 
-A terminal music-library manager written in Rust. It scans a directory tree, reads tags from audio files, stores everything in a local SQLite database, and presents a fast keyboard- and mouse-driven TUI for browsing, de-duplicating, enriching, editing, and curating a music collection.
+```
+ ▄▀▀▀▄    █▀▀▀▄ █▀▀▀▄ █▀▀▀▀ ▄▀▀▀▄ █▄ ▄█ █▀▀▀▄ █     █▀▀▀▀
+█  ●  █   █▄▄▄▀ █▀█▀  █▀▀▀  █▄▄▄█ █ ▀ █ █▀▀▀▄ █     █▀▀▀
+ ▀▄▄▄▀    █     █  ▀▄ █▄▄▄▄ █   █ █   █ █▄▄▄▀ █▄▄▄▄ █▄▄▄▄
+▁▂▃▅▆▇▆▅▃▂▁▂▃▄▅▆▅▄▃▂▁▂▃▅▇█▇▅▃▂▁▂▃▄▅▄▃▂▁▂▃▅▆▇▆▅▃▂▁▂▃▄▃▂▁▂▃▂
+```
 
-> All code in this repository was written by hand. AI was used as a learning aid and reference during development, not to generate code. This README was partially drafted with AI assistance.
+A terminal music-library manager written in Rust. It scans a directory tree, reads tags from audio files, stores everything in a local SQLite database, and presents a fast keyboard- and mouse-driven TUI for browsing, de-duplicating, enriching, editing, and curating a music collection.
 
 ## Highlights
 
@@ -103,13 +108,13 @@ Six tabs, navigable with `Tab` (or by clicking):
 |-----|--------|
 | `s` | Scan for new files |
 | `u` | Rescan changed files (incremental, by mtime) |
-| `r` | Fresh scan (wipes DB and rescans) |
+| `r` `r` | Fresh scan (wipes this library's rows and rescans; press twice to confirm) |
 | `v` | Validate paths (flag missing files) |
 | `h` | Health check (integrity scan) |
 | `Enter` | Open library |
 | `q` | Quit |
 
-Long operations show a progress gauge and can be cancelled with `Esc`.
+Long operations show a progress gauge and can be cancelled with `Esc`. Only one runs at a time; starting another while a scan, health check, or watch import is in progress is refused with a status message.
 
 ### Main screen
 
@@ -151,7 +156,7 @@ Press `m` on a track to open the editor (Title, Artist, Album, Album Artist, Gen
 
 ## Deletion: Trash, quarantine, and undo
 
-Deletion is never immediate. Pressing `d` **flags** the selected (or highlighted) tracks for deletion — a reversible flag independent of pipeline status. Flagged tracks gather in the **Trash** tab, where you can `r`estore them or `d` purge. Purging **moves** files into the `quarantine_dir` (rather than deleting them) and removes their rows. Every flag, restore, keeper-resolution, retry, and purge is recorded in a reversible action log: press `z` to undo, which also moves quarantined files back and re-inserts their rows.
+Deletion is never immediate. Pressing `d` **flags** the selected (or highlighted) tracks for deletion — a reversible flag independent of pipeline status. Flagged tracks gather in the **Trash** tab, where you can `r`estore them or `d` purge. Purging **moves** files into the `quarantine_dir` (rather than deleting them) and removes their rows. Every flag, restore, keeper-resolution, retry, and purge is recorded in a reversible action log: press `z` to undo, which also moves quarantined files back and re-inserts their rows (under their original ids, back in Trash). Undo history is kept per library, so `z` only ever reverts actions taken in the library you have open. Purging a track whose file is already gone simply removes its row.
 
 ## Duplicates
 
@@ -198,6 +203,28 @@ All three are also checked within the current scan batch.
 
 Full tag metadata (title, artist, album, album artist, composer, label, genre, ISRC, barcode, catalog number, BPM, replay gain, dates, MusicBrainz IDs, AcoustID) and technical properties (duration, bitrate, sample rate, bit depth, channels, size, format, BLAKE3 hash). Pipeline `status` is one of `pending`, `duplicate`, `enriched`, `not_found`, `failed`, `missing`, `manual_review`. Separate columns track the `marked_for_deletion` flag and any `health_issue`; an `action_log` table backs undo.
 
+## HTTP API & MCP
+
+Set `PREAMBLE_API_PORT` to start a small read-only JSON API on `127.0.0.1` alongside the TUI (`/api/health`, `/api/libraries`, `/api/stats`, `/api/tracks`, `/api/tracks/{id}`, `/api/duplicates`, and `POST /api/export`). The `mcp/` directory wraps it as an MCP server:
+
+```sh
+PREAMBLE_API_PORT=9185 preamble
+```
+
+The API sends no CORS headers and rejects any request whose `Host` isn't `localhost`/`127.0.0.1`/`[::1]`, so web pages open in your browser can't read your library through it.
+
+## Testing
+
+```sh
+cargo test
+```
+
+runs the unit tests plus robustness tests against a synthetic on-disk library (symlink loops, unreadable folders, corrupt and zero-byte files, overlapping libraries, concurrent scans, purge/undo round trips, and a schema upgrade from the previous release). A larger load test is opt-in:
+
+```sh
+STRESS_N=20000 cargo test --release stress_ -- --ignored --nocapture
+```
+
 ## Dependencies
 
 - `lofty` — tag reading/writing across many formats
@@ -206,6 +233,7 @@ Full tag metadata (title, artist, album, album artist, composer, label, genre, I
 - `blake3` — fast file hashing
 - `reqwest` + `serde_json` — AcoustID/MusicBrainz lookups
 - `notify` — filesystem watching
+- `axum` — the optional local HTTP API
 - `csv` — exports
 - `serde` + `toml` — configuration and serialization
 - `tracing` (+ subscriber/appender) — structured file logging
@@ -226,8 +254,13 @@ src/
   undo.rs       -- reversible action model
   track.rs      -- TrackInfo / TrackSummary, tag reading + writing, hashing
   db.rs         -- database init, migrations, queries, stats
+  api.rs        -- optional localhost JSON API (PREAMBLE_API_PORT)
+  stress_tests.rs -- robustness + load tests over a synthetic library
 migrations/
   *.sql         -- schema
+testdata/
+  tpl.*         -- tiny MP3/FLAC fixtures the tests copy and tag
+mcp/            -- MCP server wrapping the HTTP API
 ```
 
 ## TODOs

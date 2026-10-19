@@ -42,46 +42,57 @@ impl UndoAction {
     pub async fn apply(&self, pool: &SqlitePool) -> UndoResult {
         match self {
             UndoAction::SetMarked { ids, value } => {
-                for id in ids {
-                    db::set_marked_for_deletion(pool, *id, *value).await?;
-                }
+                db::set_marked_many(pool, ids, *value).await?;
                 Ok(format!("restored {} flag(s)", ids.len()))
             }
             UndoAction::SetStatus { items } => {
-                for (id, status) in items {
-                    db::update_track_status(pool, *id, status).await?;
-                }
+                db::set_status_many(pool, items).await?;
                 Ok(format!("reverted {} status change(s)", items.len()))
             }
             UndoAction::RestoreRows { tracks } => {
-                let mut restored = 0;
+                // Move files back first; a file already in place is fine.
                 for rt in tracks {
-                    if let Some(parent) = rt.original_path.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    // Move the file back; tolerate it already being in place.
-                    if rt.quarantine_path.exists() {
+                    if rt.original_path.exists() {
+                        // Something is back at the original path; never clobber
+                        // it. The quarantined copy stays where it is.
+                        tracing::warn!(path = %rt.original_path.display(), "undo purge: path occupied, leaving quarantined copy");
+                    } else if rt.quarantine_path.exists() {
                         move_file(&rt.quarantine_path, &rt.original_path)?;
                     }
-                    db::insert_track_pool(pool, &rt.track, rt.library_id).await?;
-                    restored += 1;
                 }
+                // Only flagged tracks are purged, so they return to Trash.
+                let rows: Vec<(&TrackInfo, i64)> =
+                    tracks.iter().map(|rt| (&rt.track, rt.library_id)).collect();
+                let restored = db::restore_tracks(pool, &rows, true).await?;
                 Ok(format!("restored {restored} purged track(s)"))
             }
         }
     }
 }
 
-/// Moves a file, falling back to copy+remove across filesystems.
+/// Moves a file, falling back to copy+remove across filesystems. Refuses to
+/// overwrite an existing destination, so a restore can never clobber a file
+/// that has since been put back at the original path.
 pub fn move_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    if to.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", to.display()),
+        ));
+    }
     if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent).ok();
+        std::fs::create_dir_all(parent)?;
     }
     match std::fs::rename(from, to) {
         Ok(()) => Ok(()),
         Err(_) => {
             std::fs::copy(from, to)?;
-            std::fs::remove_file(from)
+            if let Err(e) = std::fs::remove_file(from) {
+                // Don't leave two copies behind.
+                std::fs::remove_file(to).ok();
+                return Err(e);
+            }
+            Ok(())
         }
     }
 }

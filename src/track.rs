@@ -112,9 +112,13 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo, Box<dyn std::error::Error + S
     })
 }
 
-pub fn hash_file(path: &PathBuf) -> Option<String> {
-    let data = std::fs::read(path).ok()?;
-    Some(blake3::hash(&data).to_hex().to_string())
+/// BLAKE3 of the file's contents, streamed so large files (multi-GB WAV/DSD
+/// rips) don't have to fit in memory.
+pub fn hash_file(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(std::io::BufReader::with_capacity(1 << 16, file)).ok()?;
+    Some(hasher.finalize().to_hex().to_string())
 }
 
 /// Editable tag fields, as raw editor strings. An empty string clears the tag.

@@ -12,7 +12,6 @@ mod undo;
 
 use crate::app::App;
 use crate::config::Config;
-use crate::reader::ScanEvent;
 use std::path::PathBuf;
 use std::{env, io};
 
@@ -196,44 +195,7 @@ pub async fn run_app(mut app: App) -> Result<(), Box<dyn std::error::Error + Sen
         }
         app.expire_status();
 
-        if let Some(ref mut rx) = app.scan_receiver {
-            match rx.try_recv() {
-                Ok(ScanEvent::Progress(n, total)) => app.scan_progress = Some((n, total)),
-                Ok(ScanEvent::Done) => {
-                    app.reload().await?;
-                    app.scan_receiver = None;
-                    app.scan_progress = None;
-                    app.current_screen = app::Screens::Start;
-                }
-                _ => {}
-            }
-        }
-
-        if let Some(ref mut rx) = app.validating_receiver {
-            if let Ok(_) = rx.try_recv() {
-                app.reload().await?;
-                app.validating_receiver = None;
-                app.is_validating = false;
-            }
-        }
-
-        if let Some(ref mut rx) = app.enrich_receiver {
-            match rx.try_recv() {
-                Ok(crate::enrich::EnrichEvent::Progress(n, total)) => {
-                    app.enrich_progress = Some((n, total));
-                }
-                Ok(crate::enrich::EnrichEvent::Error(msg)) => {
-                    app.set_status(crate::app::StatusLevel::Warning, msg);
-                }
-                Ok(crate::enrich::EnrichEvent::Done) => {
-                    app.reload().await?;
-                    app.enrich_receiver = None;
-                    app.enrich_progress = None;
-                    app.is_enriching = false;
-                }
-                _ => {}
-            }
-        }
+        app.pump_workers().await?;
 
         app.commit_search_if_due().await;
         app.tick_watch().await;

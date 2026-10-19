@@ -10,35 +10,67 @@ use crate::track::{hash_file, read_tags};
 use std::sync::Arc;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::Semaphore;
-use sqlx::{SqlitePool};
+use sqlx::SqlitePool;
 
+/// Walks `root` collecting audio files (by extension, case-insensitively) that
+/// aren't already in `existing`.
+///
+/// Symlinked directories are followed, but each real directory is visited once,
+/// so a link back up the tree can't loop forever. A directory that can't be read
+/// (permissions, vanished mid-walk) is logged and skipped instead of failing the
+/// whole scan.
 pub fn collect_new_paths(
-    path: &Path,
+    root: &Path,
     paths: &mut Vec<PathBuf>,
     existing: &HashSet<String>,
     formats: &HashSet<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if path.is_dir() {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
+) {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(real) = fs::canonicalize(&dir) else {
+            continue;
+        };
+        if !visited.insert(real) {
+            continue;
+        }
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(dir = %dir.display(), error = %e, "skipping unreadable directory");
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                collect_new_paths(&path, paths, existing, formats)?;
-            } else {
+            // `metadata` follows symlinks, so a link to a dir is walked as one.
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
                 let ext_matches = path
                     .extension()
                     .and_then(|e| e.to_str())
-                    .map(|e| formats.contains(&e.to_lowercase()))
-                    .unwrap_or(false);
+                    .is_some_and(|e| formats.contains(&e.to_lowercase()));
                 if ext_matches && !existing.contains(path.to_str().unwrap_or("")) {
                     paths.push(path);
                 }
             }
         }
     }
-    Ok(())
+    // Stable order: progress and duplicate "first seen" are deterministic.
+    paths.sort();
 }
 
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Imports every new audio file under `path` into the library.
+///
+/// Always finishes by sending `ScanEvent::Done`, preceded by `ScanEvent::Error`
+/// if the scan failed part-way, so the UI never waits on a dead worker.
 pub async fn scan_library(
     pool: SqlitePool,
     library_id: i64,
@@ -47,101 +79,138 @@ pub async fn scan_library(
     concurrency: usize,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     scan_sender: tokio::sync::mpsc::Sender<ScanEvent>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Inserts are committed in batches of this size rather than in one tx held
-    // open for the whole scan. Committing periodically keeps progress durable,
-    // releases the write lock so the UI (WAL reads) stays responsive, and means
-    // a cancel keeps the batches already committed.
-    const COMMIT_BATCH: usize = 500;
-    let mut tx = pool.begin().await?;
+) -> Result<(), BoxError> {
+    let result = scan_library_inner(
+        &pool,
+        library_id,
+        path,
+        formats,
+        concurrency,
+        &cancel,
+        &scan_sender,
+    )
+    .await;
+    if let Err(e) = &result {
+        tracing::error!(error = %e, "scan failed");
+        scan_sender.send(ScanEvent::Error(format!("Scan failed: {e}"))).await.ok();
+    }
+    scan_sender.send(ScanEvent::Done).await.ok();
+    result
+}
 
-    // Bound concurrent tag-reads/hashes; tuned via config (default 8).
-    let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
+async fn scan_library_inner(
+    pool: &SqlitePool,
+    library_id: i64,
+    path: PathBuf,
+    formats: Vec<String>,
+    concurrency: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+    scan_sender: &tokio::sync::mpsc::Sender<ScanEvent>,
+) -> Result<(), BoxError> {
+    // Reads/hashes are buffered and written in batches of this size, each in a
+    // short transaction. The write lock is only held while a batch is flushed
+    // (not while files are hashed), so UI actions during a scan don't stall,
+    // and a cancel keeps everything flushed so far.
+    const COMMIT_BATCH: usize = 500;
 
     let formats: HashSet<String> = formats.into_iter().collect();
 
-    // loads existing track paths into a HashSet for fast lookup (this library only)
-    let existing_tracks = db::load_existing_paths(&pool, library_id).await?;
+    // Existing paths / ISRCs / hashes in this library, for the three dedup layers.
+    let existing_tracks = db::load_existing_paths(pool, library_id).await?;
+    let existing_isrcs = db::load_existing_isrcs(pool, library_id).await?;
+    let existing_hashes = db::load_existing_hashes(pool, library_id).await?;
 
-    // loads existing track isrcs from this library's tracks
-    let existing_isrcs = db::load_existing_isrcs(&pool, library_id).await?;
+    let new_track_paths = tokio::task::spawn_blocking(move || {
+        let mut paths = Vec::new();
+        collect_new_paths(&path, &mut paths, &existing_tracks, &formats);
+        paths
+    })
+    .await?;
 
-    // loads exsiting track hashes from this library's tracks
-    let existing_hashes = db::load_existing_hashes(&pool, library_id).await?;
-
-    // fills a Vec of all new track paths, as compared to the HashSet
-    let mut new_track_paths: Vec<PathBuf> = Vec::new();
-    collect_new_paths(&path, &mut new_track_paths, &existing_tracks, &formats)?;
-
-    //println!("There are {:?} existing tracks and {:?} new tracks!", existing_tracks.len(), new_track_paths.len());
-
-    if !new_track_paths.is_empty() {
-        //println!("New tracks found!");
-
-        let total = new_track_paths.len();
-
-        let mut processed = 0usize;
-        let mut tasks = FuturesUnordered::new();
-
-        // eprintln!("BEFORE SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
-        for p in new_track_paths {
-            let sem = Arc::clone(&semaphore);
-            tasks.push(async move {
-                let permit = sem.acquire().await.unwrap();
-                
-                let result = tokio::task::spawn_blocking(move || -> Result<track::TrackInfo, Box<dyn std::error::Error + Send + Sync>> {
-                    let mut track = read_tags(&p)?;
-                    track.file_hash = hash_file(&p);
-                    Ok(track)
-                }).await;
-                drop(permit);
-                result
-            });
-        }
-
-        let mut seen_isrcs: HashSet<String> = HashSet::new();
-        let mut seen_hashes: HashSet<String> = HashSet::new();
-
-        while let Some(result) = tasks.next().await {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                tracing::info!("scan cancelled by user");
-                break;
-            }
-            match result {
-                Ok(Ok(mut track)) => {
-                    // check duplication, and set status based on that
-                    if track.isrc.as_ref().map(|i| existing_isrcs.contains(i)).unwrap_or(false)
-                    || track.file_hash.as_ref().map(|h| existing_hashes.contains(h)).unwrap_or(false) 
-                    || track.isrc.as_ref().map(|i| seen_isrcs.contains(i)).unwrap_or(false) 
-                    || track.file_hash.as_ref().map(|h| seen_hashes.contains(h)).unwrap_or(false) {
-                        //println!("Duplicate found: {:?}", track.file_path);
-                        track.status = "duplicate".to_string();
-                    } else {
-                        track.isrc.as_deref().map(|i| seen_isrcs.insert(i.to_string()));
-                        track.file_hash.as_deref().map(|h| seen_hashes.insert(h.to_string()));
-                    }
-                    db::insert_track(&mut tx, &track, library_id).await?;
-                    processed += 1;
-                    scan_sender.try_send(ScanEvent::Progress(processed, total)).ok();
-
-                    // Commit periodically so the write lock is released and the
-                    // rows so far become durable/visible, then open a fresh tx.
-                    if processed.is_multiple_of(COMMIT_BATCH) {
-                        tx.commit().await?;
-                        tx = pool.begin().await?;
-                    }
-                }
-                Ok(Err(e)) => tracing::warn!(error = %e, "failed to read tags"),
-                Err(e) => tracing::error!(error = %e, "tag-read task panicked"),
-            }
-        }
-
-        // Commit whatever is left in the final (partial) batch.
-        tx.commit().await?;
-        // eprintln!("AFTER SCAN: {:?}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH));
+    let total = new_track_paths.len();
+    if total == 0 {
+        return Ok(());
     }
-    scan_sender.send(ScanEvent::Done).await.ok();
+
+    // `buffered` keeps results in path order (so which copy of a duplicate is
+    // "first" is deterministic) while running up to `concurrency` at once.
+    let mut tasks = futures::stream::iter(new_track_paths)
+        .map(|p| {
+            tokio::task::spawn_blocking(move || -> Result<track::TrackInfo, BoxError> {
+                let mut track = read_tags(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+                track.file_hash = hash_file(&p);
+                Ok(track)
+            })
+        })
+        .buffered(concurrency.max(1));
+
+    let mut seen_isrcs: HashSet<String> = HashSet::new();
+    let mut seen_hashes: HashSet<String> = HashSet::new();
+    let mut batch: Vec<track::TrackInfo> = Vec::with_capacity(COMMIT_BATCH);
+    let mut processed = 0usize;
+
+    while let Some(result) = tasks.next().await {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!("scan cancelled by user");
+            break;
+        }
+        processed += 1;
+        scan_sender.try_send(ScanEvent::Progress(processed, total)).ok();
+        match result {
+            Ok(Ok(mut track)) => {
+                let isrc_seen = track
+                    .isrc
+                    .as_ref()
+                    .is_some_and(|i| existing_isrcs.contains(i) || seen_isrcs.contains(i));
+                let hash_seen = track
+                    .file_hash
+                    .as_ref()
+                    .is_some_and(|h| existing_hashes.contains(h) || seen_hashes.contains(h));
+                if isrc_seen || hash_seen {
+                    track.status = "duplicate".to_string();
+                }
+                // Record keys even for duplicates so a third copy is caught too.
+                if let Some(i) = &track.isrc {
+                    seen_isrcs.insert(i.clone());
+                }
+                if let Some(h) = &track.file_hash {
+                    seen_hashes.insert(h.clone());
+                }
+                batch.push(track);
+                if batch.len() >= COMMIT_BATCH {
+                    flush_batch(pool, library_id, &mut batch).await?;
+                }
+            }
+            Ok(Err(e)) => tracing::warn!(error = %e, "failed to read tags"),
+            Err(e) => tracing::error!(error = %e, "tag-read task panicked"),
+        }
+    }
+
+    flush_batch(pool, library_id, &mut batch).await?;
     Ok(())
+}
+
+/// Writes a batch of scanned tracks in one short transaction. A row that
+/// already exists (another scan got there first) is skipped, not fatal.
+async fn flush_batch(
+    pool: &SqlitePool,
+    library_id: i64,
+    batch: &mut Vec<track::TrackInfo>,
+) -> Result<(), sqlx::Error> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    for track in batch.drain(..) {
+        match db::insert_track(&mut tx, &track, library_id).await {
+            Ok(_) => {}
+            Err(e) if db::is_unique_violation(&e) => {
+                tracing::debug!(path = %track.file_path.display(), "already imported; skipping");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    tx.commit().await
 }
 
 pub enum ScanEvent {
@@ -168,18 +237,15 @@ fn classify_health(
     if read_tags(path).is_err() {
         return Some("decode_error".to_string());
     }
-    if let Some(stored) = stored_hash {
-        if let Some(current) = hash_file(&path.to_path_buf()) {
-            if &current != stored {
+    if let Some(stored) = stored_hash
+        && let Some(current) = hash_file(path)
+            && &current != stored {
                 return Some("hash_mismatch".to_string());
             }
-        }
-    }
-    if let Some(b) = bitrate {
-        if b > 0 && b < low_bitrate_threshold {
+    if let Some(b) = bitrate
+        && b > 0 && b < low_bitrate_threshold {
             return Some("low_bitrate".to_string());
         }
-    }
     None
 }
 
@@ -302,12 +368,11 @@ pub fn watch_dir(
     use notify::{Event, EventKind, RecursiveMode, Watcher};
 
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
-        if let Ok(event) = res {
-            if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+        if let Ok(event) = res
+            && matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
                 // Coalesce: a full channel already has a pending signal.
                 let _ = tx.try_send(());
             }
-        }
     })?;
     watcher.watch(path, RecursiveMode::Recursive)?;
     Ok(watcher)
@@ -318,33 +383,42 @@ pub enum ValidateEvent {
     Error(String),
 }
 
-pub async fn validate_paths(pool: SqlitePool, library_id: i64, concurrency: usize, scan_sender: tokio::sync::oneshot::Sender<ValidateEvent>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let paths_to_check = db::load_tracks_paths(&pool, library_id).await?;
+/// Flags tracks whose file is gone as `missing`, and puts previously-missing
+/// tracks whose file is back into the queue again. Always answers on
+/// `scan_sender`, with an error message if the check couldn't run.
+pub async fn validate_paths(
+    pool: SqlitePool,
+    library_id: i64,
+    concurrency: usize,
+    scan_sender: tokio::sync::oneshot::Sender<ValidateEvent>,
+) -> Result<(), BoxError> {
+    let result = validate_paths_inner(&pool, library_id, concurrency).await;
+    let event = match &result {
+        Ok(()) => ValidateEvent::Done,
+        Err(e) => ValidateEvent::Error(format!("Validation failed: {e}")),
+    };
+    scan_sender.send(event).ok();
+    result
+}
 
-    let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
-    let mut tasks = FuturesUnordered::new();
+async fn validate_paths_inner(
+    pool: &SqlitePool,
+    library_id: i64,
+    concurrency: usize,
+) -> Result<(), BoxError> {
+    let paths_to_check = db::load_tracks_paths(pool, library_id).await?;
+    let mut checks = futures::stream::iter(paths_to_check)
+        .map(|(id, path)| tokio::task::spawn_blocking(move || (id, path.exists())))
+        .buffer_unordered(concurrency.max(1));
 
-    for (id, path) in paths_to_check {
-        let sem = Arc::clone(&semaphore);
-        tasks.push(async move {
-            let permit = sem.acquire().await.unwrap();
-
-            let result = tokio::task::spawn_blocking(move || (id, path.exists())).await;
-            drop(permit);
-            result
-        })
-    }
-
-    while let Some(result) = tasks.next().await {
-        match result {
-            Ok((id, exists)) => {
-                if !exists {
-                    db::update_track_status(&pool, id, "missing").await?;
-                }
-            },
-            _ => {},
+    let mut missing = Vec::new();
+    let mut present = Vec::new();
+    while let Some(result) = checks.next().await {
+        if let Ok((id, exists)) = result {
+            if exists { present.push(id) } else { missing.push((id, "missing")) }
         }
     }
-    scan_sender.send(ValidateEvent::Done).ok();
+    db::set_status_many(pool, &missing).await?;
+    db::clear_missing(pool, &present).await?;
     Ok(())
 }
