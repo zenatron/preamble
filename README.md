@@ -256,10 +256,13 @@ src/
   db.rs         -- database init, migrations, queries, stats
   api.rs        -- optional localhost JSON API (PREAMBLE_API_PORT)
   stress_tests.rs -- robustness + load tests over a synthetic library
+  screenshots.rs  -- renders the TUI to SVG screenshots (cargo test screenshots -- --ignored)
 migrations/
   *.sql         -- schema
 testdata/
   tpl.*         -- tiny MP3/FLAC fixtures the tests copy and tag
+assets/
+  make_art.py   -- draws icon.svg / banner.svg from the logo glyphs
 mcp/            -- MCP server wrapping the HTTP API
 ```
 

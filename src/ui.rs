@@ -2198,8 +2198,8 @@ fn draw_table_content(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Percentage(20), // album
             Constraint::Percentage(10), // file format
             Constraint::Percentage(10), // file size
-            Constraint::Percentage(5),  // duration
-            Constraint::Percentage(5),  // bitrate
+            Constraint::Length(8),      // duration (fits its header)
+            Constraint::Length(7),      // bitrate
             Constraint::Percentage(10), // status
                                         // Constraint::Percentage(10), // file hash
         ],
@@ -2822,6 +2822,10 @@ fn draw_duplicate_members_grid(f: &mut Frame, app: &mut App, area: Rect) {
 #[cfg(test)]
 #[path = "stress_tests.rs"]
 mod stress_tests;
+
+#[cfg(test)]
+#[path = "screenshots.rs"]
+mod screenshots;
 
 #[cfg(test)]
 mod tests {
